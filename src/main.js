@@ -1,5 +1,5 @@
 /**
- * Director's Cut – Frontend application
+ * Director's Cut – Frontend application v2
  */
 const { invoke } = window.__TAURI__.core;
 
@@ -13,12 +13,10 @@ function toast(msg, type = "info") {
   if (!container) {
     container = document.createElement("div");
     container.id = "toast-container";
-    container.style.cssText = "position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px;";
     document.body.appendChild(container);
   }
   const el = document.createElement("div");
-  const colors = { info: "#3b82f6", success: "#22c55e", error: "#ef4444" };
-  el.style.cssText = `background:${colors[type] || colors.info};color:#fff;padding:12px 20px;border-radius:8px;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,0.3);transition:opacity 0.3s;max-width:400px;`;
+  el.className = `toast ${type}`;
   el.textContent = msg;
   container.appendChild(el);
   setTimeout(() => { el.style.opacity = "0"; setTimeout(() => el.remove(), 300); }, 4000);
@@ -49,22 +47,22 @@ function navigateTo(page) {
 // --- Backend control ---
 async function toggleBackend() {
   const btn = document.getElementById("btn-backend-toggle");
-  const dot = document.getElementById("backend-status");
+  const dot = document.getElementById("backend-status-dot");
+  const label = document.getElementById("backend-label");
   if (!backendRunning) {
-    btn.textContent = "Starting…";
+    label.textContent = "Starting…";
     btn.disabled = true;
     try {
       const result = await invoke("start_backend");
       console.log("start_backend result:", result);
       backendRunning = true;
-      btn.textContent = "Stop Backend";
-      dot.className = "status-dot online";
-      toast("Backend started! " + (result.message || ""), "success");
-      // Wait a moment then check health
+      label.textContent = "Engine Running";
+      dot.classList.add("online");
+      toast("Backend engine started!", "success");
       setTimeout(checkBackendHealth, 2000);
     } catch (e) {
       console.error("start_backend error:", e);
-      btn.textContent = "Start Backend";
+      label.textContent = "Start Engine";
       toast("Failed to start backend: " + e, "error");
     }
     btn.disabled = false;
@@ -72,8 +70,8 @@ async function toggleBackend() {
     try {
       await invoke("stop_backend");
       backendRunning = false;
-      btn.textContent = "Start Backend";
-      dot.className = "status-dot offline";
+      label.textContent = "Start Engine";
+      dot.classList.remove("online");
       toast("Backend stopped", "info");
     } catch (e) {
       toast("Failed to stop backend: " + e, "error");
@@ -87,8 +85,8 @@ async function checkBackendHealth() {
     const data = JSON.parse(resp);
     if (data.status === "ok") {
       backendRunning = true;
-      document.getElementById("btn-backend-toggle").textContent = "Stop Backend";
-      document.getElementById("backend-status").className = "status-dot online";
+      document.getElementById("backend-label").textContent = "Engine Running";
+      document.getElementById("backend-status-dot").classList.add("online");
     }
   } catch { /* offline */ }
 }
@@ -103,7 +101,7 @@ async function loadProjects() {
       ? projects.map((p) =>
           `<div class="item" data-id="${p.id}"><div><span class="item-name">${p.name}</span><br><span class="item-meta">${p.description || ""}</span></div><span class="item-meta">${new Date(p.created_at).toLocaleDateString()}</span></div>`
         ).join("")
-      : '<p class="item-meta">No projects yet.</p>';
+      : '<p class="item-meta" style="padding:20px;text-align:center;">No projects yet. Start a production from the Command Center.</p>';
   } catch { /* offline */ }
 }
 
@@ -121,7 +119,6 @@ async function startQuickRun(prompt) {
     if (!backendRunning) {
       toast("Backend not running — starting it first…", "info");
       await toggleBackend();
-      // Give uvicorn time to boot
       await new Promise(r => setTimeout(r, 3000));
     }
     let projects;
@@ -146,8 +143,13 @@ async function startQuickRun(prompt) {
 function showPipeline(run) {
   document.getElementById("pipeline-view").style.display = "block";
   document.getElementById("pipeline-run-id").textContent = run.id.slice(0, 8);
-  document.querySelectorAll(".stage").forEach((s) => s.classList.remove("active", "completed"));
-  const cur = document.querySelector(`[data-stage="${run.current_stage}"]`);
+  // Reset stages
+  document.querySelectorAll(".stage-node").forEach((s) => s.classList.remove("active", "completed", "failed"));
+  // Hide video + results panels
+  document.getElementById("video-panel").style.display = "none";
+  document.getElementById("results-panel").style.display = "none";
+  // Mark current
+  const cur = document.querySelector(`.stage-node[data-stage="${run.current_stage}"]`);
   if (cur) cur.classList.add("active");
 }
 
@@ -160,7 +162,6 @@ function streamLogs(runId) {
     const data = JSON.parse(e.data);
     const ts = new Date().toLocaleTimeString();
 
-    // Display in log panel
     if (data.type === "stage_thinking") {
       logEl.textContent += `  ${data.message}\n`;
     } else {
@@ -170,11 +171,11 @@ function streamLogs(runId) {
 
     // Update pipeline stage indicators
     if (data.type === "stage_start" && data.stage) {
-      const el = document.querySelector(`[data-stage="${data.stage}"]`);
-      if (el) { el.classList.remove("completed"); el.classList.add("active"); }
+      const el = document.querySelector(`.stage-node[data-stage="${data.stage}"]`);
+      if (el) { el.classList.remove("completed", "failed"); el.classList.add("active"); }
     }
     if (data.type === "stage_complete" && data.stage) {
-      const el = document.querySelector(`[data-stage="${data.stage}"]`);
+      const el = document.querySelector(`.stage-node[data-stage="${data.stage}"]`);
       if (el) { el.classList.remove("active"); el.classList.add("completed"); }
     }
 
@@ -200,13 +201,34 @@ function streamLogs(runId) {
   };
 }
 
-// --- Run Results ---
+// --- Run Results with Video Player ---
 async function loadRunResults(runId) {
   try {
     const data = await api("GET", `/api/runs/${runId}/outputs`);
-    const panel = document.getElementById("results-panel");
+    const resultsPanel = document.getElementById("results-panel");
     const content = document.getElementById("results-content");
-    panel.style.display = "block";
+    const videoPanel = document.getElementById("video-panel");
+    const videoPlayer = document.getElementById("video-player");
+    const videoMeta = document.getElementById("video-meta");
+
+    // ── Check for rendered video ──
+    const renderOutput = data.outputs?.render;
+    if (renderOutput?.rendered && renderOutput?.output_path) {
+      // Build URL: output_path is like "data/exports/{runId}/render.mp4"
+      // Backend serves /media/exports/{runId}/render.mp4
+      const videoUrl = `http://127.0.0.1:9420/media/exports/${runId}/render.mp4`;
+      videoPlayer.src = videoUrl;
+      videoPanel.style.display = "block";
+
+      // Show metadata
+      const dur = renderOutput.duration_seconds ? `${Math.round(renderOutput.duration_seconds)}s` : "—";
+      const size = renderOutput.file_size_bytes ? `${(renderOutput.file_size_bytes / 1024).toFixed(0)} KB` : "—";
+      const scenes = renderOutput.scene_count || "—";
+      videoMeta.innerHTML = `<span>⏱ ${dur}</span><span>📐 ${scenes} scenes</span><span>💾 ${size}</span>`;
+    }
+
+    // ── Stage-by-stage results ──
+    resultsPanel.style.display = "block";
 
     const stageLabels = {
       intake: "📋 Intake",
@@ -227,9 +249,10 @@ async function loadRunResults(runId) {
     for (const [stage, output] of Object.entries(data.outputs || {})) {
       const label = stageLabels[stage] || stage;
       const isSimulated = output.simulated;
-      html += `<details class="result-stage" ${stage === "planning" || stage === "script" ? "open" : ""}>`;
-      html += `<summary style="cursor:pointer;font-weight:600;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.1);">${label}${isSimulated ? ' <span style="opacity:0.5;font-size:12px;">(simulated)</span>' : ""}</summary>`;
-      html += `<div style="padding:12px 0;">`;
+      const isOpen = stage === "planning" || stage === "script" || stage === "storyboard";
+      html += `<details class="result-stage" ${isOpen ? "open" : ""}>`;
+      html += `<summary>${label}${isSimulated ? '<span class="sim-badge">simulated</span>' : ""}</summary>`;
+      html += `<div class="result-body">`;
 
       if (output.title) html += `<p><strong>Title:</strong> ${output.title}</p>`;
       if (output.tone) html += `<p><strong>Tone:</strong> ${output.tone} · <strong>Style:</strong> ${output.style || "—"}</p>`;
@@ -263,17 +286,17 @@ async function loadRunResults(runId) {
         html += `<h4>Facts</h4><ul>${output.facts.map(f => `<li>${typeof f === "string" ? f : JSON.stringify(f)}</li>`).join("")}</ul>`;
       }
 
-      if (output.notes) html += `<p style="opacity:0.7;font-style:italic;margin-top:8px;">${output.notes}</p>`;
+      if (output.notes) html += `<p style="opacity:0.6;font-style:italic;margin-top:8px;">${output.notes}</p>`;
 
-      // Fallback: show raw JSON for stages without special rendering
-      if (!output.title && !output.scenes && !output.script_lines && !output.shots && !output.facts) {
-        html += `<pre style="font-size:12px;opacity:0.8;white-space:pre-wrap;">${JSON.stringify(output, null, 2)}</pre>`;
+      // Fallback: raw JSON
+      if (!output.title && !output.scenes && !output.script_lines && !output.shots && !output.facts && !output.rendered && !output.exported && !output.packaged && !output.timeline_built && !output.audio_generated && !output.assets_acquired) {
+        html += `<pre>${JSON.stringify(output, null, 2)}</pre>`;
       }
 
       html += `</div></details>`;
     }
 
-    if (!html) html = "<p>No outputs recorded.</p>";
+    if (!html) html = '<p style="color:var(--text-2);text-align:center;padding:20px;">No outputs recorded.</p>';
     content.innerHTML = html;
   } catch (e) {
     console.error("Failed to load results:", e);
@@ -293,6 +316,8 @@ async function submitApproval(runId, stage, decision) {
   const notes = document.getElementById("approval-notes").value;
   await api("POST", `/api/approvals/${runId}`, { stage, decision, notes });
   document.getElementById("approval-modal").style.display = "none";
+  document.getElementById("approval-notes").value = "";
+  toast(`${stage} ${decision}d`, decision === "approve" ? "success" : "info");
 }
 
 // --- Settings ---
@@ -337,6 +362,7 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-new-project").addEventListener("click", createProject);
   document.getElementById("settings-form").addEventListener("submit", saveSettings);
   checkBackendHealth();
+  // Keyboard shortcuts
   document.addEventListener("keydown", (e) => {
     if (e.metaKey || e.ctrlKey) {
       switch (e.key) {

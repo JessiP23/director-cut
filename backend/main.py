@@ -9,9 +9,7 @@ Usage:
 import os
 import sys
 
-from dotenv import load_dotenv
-
-load_dotenv()
+# .env is loaded inside app.server — no extra dependency needed
 
 # Re-export the FastAPI app so `uvicorn main:app` works
 from app.server import app  # noqa: E402, F401

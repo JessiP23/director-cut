@@ -14,6 +14,7 @@ if _env_path.exists():
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="Director's Cut", version="0.1.0")
 
@@ -23,6 +24,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve rendered exports as static files (video playback)
+_export_dir = Path(__file__).resolve().parent.parent / "data" / "exports"
+_export_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/media/exports", StaticFiles(directory=str(_export_dir)), name="exports")
 
 # Import routes safely – each one handles its own import errors
 from app.routes import projects, runs, artifacts, approvals, settings, events  # noqa: E402

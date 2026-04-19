@@ -12,124 +12,196 @@
       <!-- Sidebar -->
       <nav id="sidebar">
         <div class="sidebar-brand">
+          <div class="brand-icon">🎬</div>
           <h2>Director's Cut</h2>
+          <span class="brand-tag">AI Video Studio</span>
         </div>
         <ul class="nav-links">
-          <li><a href="#" data-page="dashboard" class="active">📋 Dashboard</a></li>
-          <li><a href="#" data-page="projects">📁 Projects</a></li>
-          <li><a href="#" data-page="runs">▶️ Runs</a></li>
-          <li><a href="#" data-page="artifacts">🎬 Artifacts</a></li>
-          <li><a href="#" data-page="settings">⚙️ Settings</a></li>
+          <li><a href="#" data-page="dashboard" class="active"><span class="nav-icon">⌘</span> Command Center</a></li>
+          <li><a href="#" data-page="projects"><span class="nav-icon">◉</span> Projects</a></li>
+          <li><a href="#" data-page="runs"><span class="nav-icon">▸</span> Productions</a></li>
+          <li><a href="#" data-page="artifacts"><span class="nav-icon">◆</span> Media Library</a></li>
+          <li><a href="#" data-page="settings"><span class="nav-icon">⚙</span> Settings</a></li>
         </ul>
         <div class="sidebar-footer">
-          <button id="btn-backend-toggle" class="btn btn-sm">Start Backend</button>
-          <span id="backend-status" class="status-dot offline"></span>
+          <button id="btn-backend-toggle" class="btn btn-backend">
+            <span class="pulse-dot" id="backend-status-dot"></span>
+            <span id="backend-label">Start Engine</span>
+          </button>
         </div>
       </nav>
 
       <!-- Main content -->
       <main id="main-content">
-        <!-- Dashboard page -->
+
+        <!-- ─── Dashboard ─── -->
         <section id="page-dashboard" class="page active">
-          <header class="page-header"><h1>Dashboard</h1></header>
+          <header class="page-header">
+            <div>
+              <h1>Command Center</h1>
+              <p class="page-subtitle">AI-powered video production at your fingertips</p>
+            </div>
+          </header>
+
           <div class="dashboard-grid">
-            <div class="card stat-card"><h3>Projects</h3><p id="stat-projects" class="stat-value">0</p></div>
-            <div class="card stat-card"><h3>Active Runs</h3><p id="stat-runs" class="stat-value">0</p></div>
-            <div class="card stat-card"><h3>Artifacts</h3><p id="stat-artifacts" class="stat-value">0</p></div>
-            <div class="card stat-card"><h3>Exports</h3><p id="stat-exports" class="stat-value">0</p></div>
+            <div class="stat-card glass-card">
+              <div class="stat-icon">◉</div>
+              <div class="stat-body"><p class="stat-value" id="stat-projects">0</p><p class="stat-label">Projects</p></div>
+            </div>
+            <div class="stat-card glass-card">
+              <div class="stat-icon pulse-green">▸</div>
+              <div class="stat-body"><p class="stat-value" id="stat-runs">0</p><p class="stat-label">Active Runs</p></div>
+            </div>
+            <div class="stat-card glass-card">
+              <div class="stat-icon">◆</div>
+              <div class="stat-body"><p class="stat-value" id="stat-artifacts">0</p><p class="stat-label">Artifacts</p></div>
+            </div>
+            <div class="stat-card glass-card">
+              <div class="stat-icon">⬡</div>
+              <div class="stat-body"><p class="stat-value" id="stat-exports">0</p><p class="stat-label">Exports</p></div>
+            </div>
           </div>
-          <div class="card">
-            <h3>Quick Start</h3>
+
+          <div class="hero-card glass-card">
+            <div class="hero-glow"></div>
+            <h3>New Production</h3>
+            <p class="hero-desc">Describe your video idea and let the AI pipeline handle the rest — research, scripting, storyboarding, rendering, all automated.</p>
             <form id="quick-start-form" class="quick-start">
-              <input id="quick-prompt" type="text" placeholder="Describe your video…" />
-              <button type="submit" class="btn btn-primary">Start Production</button>
+              <div class="input-wrapper">
+                <input id="quick-prompt" type="text" placeholder="e.g. A 60-second explainer about quantum computing…" autocomplete="off" />
+                <button type="submit" class="btn btn-glow">
+                  <span>Produce</span>
+                  <span class="btn-arrow">→</span>
+                </button>
+              </div>
             </form>
           </div>
         </section>
 
-        <!-- Projects page -->
+        <!-- ─── Projects ─── -->
         <section id="page-projects" class="page">
           <header class="page-header">
-            <h1>Projects</h1>
+            <div><h1>Projects</h1><p class="page-subtitle">Organize your productions</p></div>
             <button id="btn-new-project" class="btn btn-primary">+ New Project</button>
           </header>
           <div id="project-list" class="item-list"></div>
         </section>
 
-        <!-- Runs page -->
+        <!-- ─── Runs / Productions ─── -->
         <section id="page-runs" class="page">
-          <header class="page-header"><h1>Production Runs</h1></header>
+          <header class="page-header">
+            <div><h1>Productions</h1><p class="page-subtitle">Pipeline runs & output</p></div>
+          </header>
           <div id="run-list" class="item-list"></div>
-          <div id="pipeline-view" class="pipeline" style="display:none;">
-            <h3>Pipeline: <span id="pipeline-run-id"></span></h3>
-            <div class="pipeline-stages">
-              <div class="stage" data-stage="intake">Intake</div>
-              <div class="stage" data-stage="planning">Planning</div>
-              <div class="stage" data-stage="research">Research</div>
-              <div class="stage" data-stage="script">Script</div>
-              <div class="stage" data-stage="storyboard">Storyboard</div>
-              <div class="stage" data-stage="assets">Assets</div>
-              <div class="stage" data-stage="audio">Audio</div>
-              <div class="stage" data-stage="edit_assembly">Edit</div>
-              <div class="stage" data-stage="qa">QA</div>
-              <div class="stage" data-stage="render">Render</div>
-              <div class="stage" data-stage="package">Package</div>
-              <div class="stage" data-stage="export">Export</div>
+
+          <div id="pipeline-view" class="pipeline-container" style="display:none;">
+            <div class="pipeline-header">
+              <h3>Pipeline <span class="run-badge" id="pipeline-run-id"></span></h3>
             </div>
-            <div id="log-panel" class="log-panel">
-              <h4>Live Logs</h4>
-              <pre id="log-output"></pre>
+
+            <div class="pipeline-track">
+              <div class="stage-node" data-stage="intake"><span class="stage-dot"></span><span class="stage-label">Intake</span></div>
+              <div class="stage-connector"></div>
+              <div class="stage-node" data-stage="planning"><span class="stage-dot"></span><span class="stage-label">Plan</span></div>
+              <div class="stage-connector"></div>
+              <div class="stage-node" data-stage="research"><span class="stage-dot"></span><span class="stage-label">Research</span></div>
+              <div class="stage-connector"></div>
+              <div class="stage-node" data-stage="script"><span class="stage-dot"></span><span class="stage-label">Script</span></div>
+              <div class="stage-connector"></div>
+              <div class="stage-node" data-stage="storyboard"><span class="stage-dot"></span><span class="stage-label">Storyboard</span></div>
+              <div class="stage-connector"></div>
+              <div class="stage-node" data-stage="assets"><span class="stage-dot"></span><span class="stage-label">Assets</span></div>
+              <div class="stage-connector"></div>
+              <div class="stage-node" data-stage="audio"><span class="stage-dot"></span><span class="stage-label">Audio</span></div>
+              <div class="stage-connector"></div>
+              <div class="stage-node" data-stage="edit_assembly"><span class="stage-dot"></span><span class="stage-label">Edit</span></div>
+              <div class="stage-connector"></div>
+              <div class="stage-node" data-stage="qa"><span class="stage-dot"></span><span class="stage-label">QA</span></div>
+              <div class="stage-connector"></div>
+              <div class="stage-node" data-stage="render"><span class="stage-dot"></span><span class="stage-label">Render</span></div>
+              <div class="stage-connector"></div>
+              <div class="stage-node" data-stage="package"><span class="stage-dot"></span><span class="stage-label">Package</span></div>
+              <div class="stage-connector"></div>
+              <div class="stage-node" data-stage="export"><span class="stage-dot"></span><span class="stage-label">Export</span></div>
             </div>
-            <div id="results-panel" class="card" style="display:none; margin-top:16px;">
-              <h3>🎬 Production Results</h3>
-              <div id="results-content" style="max-height:500px; overflow-y:auto;"></div>
+
+            <div class="pipeline-body">
+              <div id="log-panel" class="log-panel glass-card">
+                <div class="log-header"><span class="log-dot"></span> Live Output</div>
+                <pre id="log-output"></pre>
+              </div>
+
+              <!-- Video player (shown after render) -->
+              <div id="video-panel" class="video-panel glass-card" style="display:none;">
+                <h4>🎥 Rendered Output</h4>
+                <video id="video-player" controls preload="metadata">
+                  Your browser does not support the video tag.
+                </video>
+                <div id="video-meta" class="video-meta"></div>
+              </div>
+
+              <div id="results-panel" class="results-panel glass-card" style="display:none;">
+                <h3>Production Results</h3>
+                <div id="results-content"></div>
+              </div>
             </div>
           </div>
-          <div id="approval-modal" class="modal" style="display:none;">
-            <div class="modal-content">
+
+          <!-- Approval modal -->
+          <div id="approval-modal" class="modal-overlay" style="display:none;">
+            <div class="modal glass-card">
+              <div class="modal-icon">⏸</div>
               <h3>Approval Required</h3>
-              <p id="approval-stage"></p>
-              <textarea id="approval-notes" placeholder="Notes (optional)"></textarea>
+              <p id="approval-stage" class="modal-stage"></p>
+              <textarea id="approval-notes" placeholder="Notes (optional)…"></textarea>
               <div class="modal-actions">
-                <button id="btn-approve" class="btn btn-primary">Approve</button>
-                <button id="btn-revise" class="btn">Request Revision</button>
-                <button id="btn-reject" class="btn btn-danger">Reject</button>
+                <button id="btn-approve" class="btn btn-glow">✓ Approve</button>
+                <button id="btn-revise" class="btn btn-outline">↻ Revise</button>
+                <button id="btn-reject" class="btn btn-danger">✕ Reject</button>
               </div>
             </div>
           </div>
         </section>
 
-        <!-- Artifacts page -->
+        <!-- ─── Artifacts / Media Library ─── -->
         <section id="page-artifacts" class="page">
-          <header class="page-header"><h1>Artifacts</h1></header>
+          <header class="page-header">
+            <div><h1>Media Library</h1><p class="page-subtitle">Generated assets and renders</p></div>
+          </header>
           <div id="artifact-list" class="item-list"></div>
         </section>
 
-        <!-- Settings page -->
+        <!-- ─── Settings ─── -->
         <section id="page-settings" class="page">
-          <header class="page-header"><h1>Settings</h1></header>
-          <div class="card">
-            <form id="settings-form">
-              <div class="form-group">
-                <label for="setting-groq-key">Groq API Key <span style="opacity:0.5;font-size:12px;">(free at console.groq.com)</span></label>
-                <input id="setting-groq-key" type="password" placeholder="gsk_…" />
-              </div>
-              <div class="form-group">
-                <label for="setting-api-key">OpenRouter API Key <span style="opacity:0.5;font-size:12px;">(optional, needs credits)</span></label>
-                <input id="setting-api-key" type="password" placeholder="sk-or-…" />
-              </div>
-              <div class="form-group">
-                <label for="setting-model">Default Model</label>
-                <input id="setting-model" type="text" placeholder="llama-3.3-70b-versatile" />
-              </div>
-              <div class="form-group">
-                <label for="setting-ffmpeg">FFmpeg Path</label>
-                <input id="setting-ffmpeg" type="text" placeholder="/usr/local/bin/ffmpeg" />
-              </div>
-              <button type="submit" class="btn btn-primary">Save Settings</button>
-            </form>
+          <header class="page-header">
+            <div><h1>Settings</h1><p class="page-subtitle">Configure your studio</p></div>
+          </header>
+          <div class="settings-grid">
+            <div class="glass-card settings-section">
+              <h4>LLM Provider</h4>
+              <form id="settings-form">
+                <div class="form-group">
+                  <label for="setting-groq-key">Groq API Key <span class="label-hint">(free at console.groq.com)</span></label>
+                  <input id="setting-groq-key" type="password" placeholder="gsk_…" />
+                </div>
+                <div class="form-group">
+                  <label for="setting-api-key">OpenRouter API Key <span class="label-hint">(optional)</span></label>
+                  <input id="setting-api-key" type="password" placeholder="sk-or-…" />
+                </div>
+                <div class="form-group">
+                  <label for="setting-model">Default Model</label>
+                  <input id="setting-model" type="text" placeholder="llama-3.3-70b-versatile" />
+                </div>
+                <div class="form-group">
+                  <label for="setting-ffmpeg">FFmpeg Path</label>
+                  <input id="setting-ffmpeg" type="text" placeholder="/usr/local/bin/ffmpeg (auto-detected)" />
+                </div>
+                <button type="submit" class="btn btn-primary">Save Settings</button>
+              </form>
+            </div>
           </div>
         </section>
+
       </main>
     </div>
   </body>

@@ -84,20 +84,33 @@ async def call_llm(
         payload["response_format"] = {"type": "json_object"}
 
     log.info("llm_call", provider=url.split("/")[2], model=resolved_model)
+    print(f"[LLM] Calling {url.split('/')[2]} model={resolved_model} ...", flush=True)
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        timeout_cfg = httpx.Timeout(60.0, connect=10.0)
+        async with httpx.AsyncClient(timeout=timeout_cfg) as client:
             resp = await client.post(url, json=payload, headers=headers)
+            print(f"[LLM] Response status: {resp.status_code}", flush=True)
             resp.raise_for_status()
             data = resp.json()
 
         content = data["choices"][0]["message"]["content"]
+        print(f"[LLM] Got {len(content)} chars", flush=True)
         try:
             return json.loads(content)
         except json.JSONDecodeError:
             log.warning("llm_non_json_response", content=content[:200])
             return {"raw": content}
+    except httpx.TimeoutException as exc:
+        print(f"[LLM] TIMEOUT: {exc}", flush=True)
+        log.error("llm_timeout", error=str(exc))
+        return _simulated_response(system, user)
+    except httpx.HTTPStatusError as exc:
+        print(f"[LLM] HTTP ERROR {exc.response.status_code}: {exc.response.text[:300]}", flush=True)
+        log.error("llm_http_error", status=exc.response.status_code, error=exc.response.text[:300])
+        return _simulated_response(system, user)
     except Exception as exc:
+        print(f"[LLM] ERROR: {type(exc).__name__}: {exc}", flush=True)
         log.error("llm_call_failed", error=str(exc))
         return _simulated_response(system, user)
 
