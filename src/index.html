@@ -12,16 +12,15 @@
       <!-- Sidebar -->
       <nav id="sidebar">
         <div class="sidebar-brand">
-          <div class="brand-icon">🎬</div>
           <h2>Director's Cut</h2>
           <span class="brand-tag">AI Video Studio</span>
         </div>
         <ul class="nav-links">
-          <li><a href="#" data-page="dashboard" class="active"><span class="nav-icon">⌘</span> Command Center</a></li>
-          <li><a href="#" data-page="projects"><span class="nav-icon">◉</span> Projects</a></li>
-          <li><a href="#" data-page="runs"><span class="nav-icon">▸</span> Productions</a></li>
-          <li><a href="#" data-page="artifacts"><span class="nav-icon">◆</span> Media Library</a></li>
-          <li><a href="#" data-page="settings"><span class="nav-icon">⚙</span> Settings</a></li>
+          <li><a href="#" data-page="dashboard" class="active">Command Center</a></li>
+          <li><a href="#" data-page="projects">Projects</a></li>
+          <li><a href="#" data-page="runs">Productions</a></li>
+          <li><a href="#" data-page="artifacts">Media Library</a></li>
+          <li><a href="#" data-page="settings">Settings</a></li>
         </ul>
         <div class="sidebar-footer">
           <button id="btn-backend-toggle" class="btn btn-backend">
@@ -45,28 +44,27 @@
 
           <div class="dashboard-grid">
             <div class="stat-card glass-card">
-              <div class="stat-icon">◉</div>
               <div class="stat-body"><p class="stat-value" id="stat-projects">0</p><p class="stat-label">Projects</p></div>
             </div>
             <div class="stat-card glass-card">
-              <div class="stat-icon pulse-green">▸</div>
               <div class="stat-body"><p class="stat-value" id="stat-runs">0</p><p class="stat-label">Active Runs</p></div>
             </div>
             <div class="stat-card glass-card">
-              <div class="stat-icon">◆</div>
               <div class="stat-body"><p class="stat-value" id="stat-artifacts">0</p><p class="stat-label">Artifacts</p></div>
             </div>
             <div class="stat-card glass-card">
-              <div class="stat-icon">⬡</div>
               <div class="stat-body"><p class="stat-value" id="stat-exports">0</p><p class="stat-label">Exports</p></div>
             </div>
           </div>
 
           <div class="hero-card glass-card">
-            <div class="hero-glow"></div>
             <h3>New Production</h3>
             <p class="hero-desc">Describe your video idea and let the AI pipeline handle the rest — research, scripting, storyboarding, rendering, all automated.</p>
             <form id="quick-start-form" class="quick-start">
+              <div class="form-group compact">
+                <label for="quick-max-scenes">Max scenes <span id="quick-max-scenes-value">4</span></label>
+                <input id="quick-max-scenes" type="range" min="1" max="8" step="1" value="4" />
+              </div>
               <div class="input-wrapper">
                 <input id="quick-prompt" type="text" placeholder="e.g. A 60-second explainer about quantum computing…" autocomplete="off" />
                 <button type="submit" class="btn btn-glow">
@@ -90,7 +88,11 @@
         <!-- ─── Runs / Productions ─── -->
         <section id="page-runs" class="page">
           <header class="page-header">
-            <div><h1>Productions</h1><p class="page-subtitle">Pipeline runs & output</p></div>
+            <div>
+              <h1>Productions</h1>
+              <p class="page-subtitle">Pipeline runs & output</p>
+              <p id="runs-scope-badge" class="scope-badge">Scoped to: All projects</p>
+            </div>
           </header>
           <div id="run-list" class="item-list"></div>
 
@@ -130,34 +132,47 @@
                 <div class="log-header"><span class="log-dot"></span> Live Output</div>
                 <pre id="log-output"></pre>
               </div>
+            </div>
+          </div>
 
-              <!-- Video player (shown after render) -->
-              <div id="video-panel" class="video-panel glass-card" style="display:none;">
-                <h4>🎥 Rendered Output</h4>
-                <video id="video-player" controls preload="metadata">
-                  Your browser does not support the video tag.
-                </video>
-                <div id="video-meta" class="video-meta"></div>
+          <div id="output-view" class="output-container" style="display:none;">
+            <div id="preview-panel" class="video-panel glass-card" style="display:none;">
+              <div class="panel-head">
+                <h4>Progressive Preview</h4>
+                <label class="inline-toggle" for="preview-autoplay-toggle">
+                  <input id="preview-autoplay-toggle" type="checkbox" checked />
+                  <span>Auto-play newest clip</span>
+                </label>
               </div>
+              <video id="preview-player" controls preload="metadata"></video>
+              <div id="preview-meta" class="video-meta"></div>
+              <div id="preview-list" class="item-list compact-list"></div>
+            </div>
 
-              <div id="results-panel" class="results-panel glass-card" style="display:none;">
-                <h3>Production Results</h3>
-                <div id="results-content"></div>
-              </div>
+            <div id="video-panel" class="video-panel glass-card" style="display:none;">
+              <h4>Final Render</h4>
+              <video id="video-player" controls preload="metadata">
+                Your browser does not support the video tag.
+              </video>
+              <div id="video-meta" class="video-meta"></div>
+            </div>
+
+            <div id="results-panel" class="results-panel glass-card" style="display:none;">
+              <h3>Production Results</h3>
+              <div id="results-content"></div>
             </div>
           </div>
 
           <!-- Approval modal -->
           <div id="approval-modal" class="modal-overlay" style="display:none;">
             <div class="modal glass-card">
-              <div class="modal-icon">⏸</div>
               <h3>Approval Required</h3>
               <p id="approval-stage" class="modal-stage"></p>
               <textarea id="approval-notes" placeholder="Notes (optional)…"></textarea>
               <div class="modal-actions">
-                <button id="btn-approve" class="btn btn-glow">✓ Approve</button>
-                <button id="btn-revise" class="btn btn-outline">↻ Revise</button>
-                <button id="btn-reject" class="btn btn-danger">✕ Reject</button>
+                <button id="btn-approve" class="btn btn-glow">Approve</button>
+                <button id="btn-revise" class="btn btn-outline">Revise</button>
+                <button id="btn-reject" class="btn btn-danger">Reject</button>
               </div>
             </div>
           </div>
@@ -166,7 +181,17 @@
         <!-- ─── Artifacts / Media Library ─── -->
         <section id="page-artifacts" class="page">
           <header class="page-header">
-            <div><h1>Media Library</h1><p class="page-subtitle">Generated assets and renders</p></div>
+            <div>
+              <h1>Media Library</h1>
+              <p class="page-subtitle">Generated assets and renders</p>
+              <p id="media-scope-badge" class="scope-badge">Scoped to: All projects</p>
+            </div>
+            <div class="media-controls">
+              <label for="artifact-project-filter">Project</label>
+              <select id="artifact-project-filter">
+                <option value="all">All projects</option>
+              </select>
+            </div>
           </header>
           <div id="artifact-list" class="item-list"></div>
         </section>
@@ -195,6 +220,10 @@
                 <div class="form-group">
                   <label for="setting-ffmpeg">FFmpeg Path</label>
                   <input id="setting-ffmpeg" type="text" placeholder="/usr/local/bin/ffmpeg (auto-detected)" />
+                </div>
+                <div class="form-group">
+                  <label for="setting-max-scenes">Max Scenes per Production</label>
+                  <input id="setting-max-scenes" type="number" min="1" max="8" step="1" placeholder="4" />
                 </div>
                 <button type="submit" class="btn btn-primary">Save Settings</button>
               </form>

@@ -34,5 +34,5 @@ async def emit_progress(run_id: str, stage: str, message: str):
 
 async def think(run_id: str, stage: str, thought: str, delay: float = 0.6):
     """Emit a 'thinking' message with a small delay for realistic pacing."""
-    await event_bus.emit(run_id, "stage_thinking", {"stage": stage, "message": f"💭 {thought}"})
+    await event_bus.emit(run_id, "stage_thinking", {"stage": stage, "message": thought})
     await asyncio.sleep(delay)

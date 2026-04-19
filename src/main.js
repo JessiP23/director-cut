@@ -6,6 +6,47 @@ const { invoke } = window.__TAURI__.core;
 let backendRunning = false;
 let currentRunId = null;
 let eventSource = null;
+let selectedProjectId = null;
+let previewClips = [];
+let autoPlayPreview = true;
+let mediaProjectFilter = "all";
+let projectsCache = [];
+
+const STORAGE_KEYS = {
+  selectedProjectId: "director.selectedProjectId",
+  mediaProjectFilter: "director.mediaProjectFilter",
+};
+
+function persistContext() {
+  if (selectedProjectId) {
+    localStorage.setItem(STORAGE_KEYS.selectedProjectId, selectedProjectId);
+  } else {
+    localStorage.removeItem(STORAGE_KEYS.selectedProjectId);
+  }
+  localStorage.setItem(STORAGE_KEYS.mediaProjectFilter, mediaProjectFilter || "all");
+}
+
+function restoreContext() {
+  selectedProjectId = localStorage.getItem(STORAGE_KEYS.selectedProjectId);
+  mediaProjectFilter = localStorage.getItem(STORAGE_KEYS.mediaProjectFilter) || "all";
+}
+
+function projectNameById(projectId) {
+  if (!projectId || projectId === "all") return "All projects";
+  const match = projectsCache.find((p) => p.id === projectId);
+  return match ? match.name : "Selected project";
+}
+
+function refreshScopeBadges() {
+  const runsBadge = document.getElementById("runs-scope-badge");
+  const mediaBadge = document.getElementById("media-scope-badge");
+  if (runsBadge) {
+    runsBadge.textContent = `Scoped to: ${projectNameById(selectedProjectId || "all")}`;
+  }
+  if (mediaBadge) {
+    mediaBadge.textContent = `Scoped to: ${projectNameById(mediaProjectFilter || "all")}`;
+  }
+}
 
 // --- Toast notification helper ---
 function toast(msg, type = "info") {
@@ -95,20 +136,52 @@ async function checkBackendHealth() {
 async function loadProjects() {
   try {
     const projects = await api("GET", "/api/projects");
+    projectsCache = projects;
+    const runs = await api("GET", "/api/runs");
+
+    const projectIds = new Set(projects.map((p) => p.id));
+    if (selectedProjectId && !projectIds.has(selectedProjectId)) {
+      selectedProjectId = null;
+    }
+    if (mediaProjectFilter !== "all" && !projectIds.has(mediaProjectFilter)) {
+      mediaProjectFilter = "all";
+    }
+    persistContext();
+    refreshScopeBadges();
+
     document.getElementById("stat-projects").textContent = projects.length;
     const list = document.getElementById("project-list");
     list.innerHTML = projects.length
       ? projects.map((p) =>
-          `<div class="item" data-id="${p.id}"><div><span class="item-name">${p.name}</span><br><span class="item-meta">${p.description || ""}</span></div><span class="item-meta">${new Date(p.created_at).toLocaleDateString()}</span></div>`
+          `<div class="item" data-id="${p.id}"><div><span class="item-name">${p.name}</span><br><span class="item-meta">${p.description || "No description"}</span></div><span class="item-meta">${runs.filter(r => r.project_id === p.id).length} runs</span></div>`
         ).join("")
       : '<p class="item-meta" style="padding:20px;text-align:center;">No projects yet. Start a production from the Command Center.</p>';
+
+    list.querySelectorAll(".item").forEach((el) => {
+      el.addEventListener("click", () => {
+        selectedProjectId = el.dataset.id;
+        mediaProjectFilter = selectedProjectId;
+        persistContext();
+        const filterEl = document.getElementById("artifact-project-filter");
+        if (filterEl) {
+          filterEl.value = mediaProjectFilter;
+        }
+        refreshScopeBadges();
+        navigateTo("runs");
+        loadRuns(selectedProjectId);
+      });
+    });
   } catch { /* offline */ }
 }
 
 async function createProject() {
   const name = prompt("Project name:");
   if (!name) return;
-  await api("POST", "/api/projects", { name, description: "" });
+  const created = await api("POST", "/api/projects", { name, description: "" });
+  selectedProjectId = created.id;
+  mediaProjectFilter = created.id;
+  persistContext();
+  refreshScopeBadges();
   loadProjects();
 }
 
@@ -128,29 +201,135 @@ async function startQuickRun(prompt) {
       toast("Cannot reach backend. Make sure it's running.", "error");
       return;
     }
-    let pid = projects.length ? projects[0].id : (await api("POST", "/api/projects", { name: "Quick Project" })).id;
-    const run = await api("POST", "/api/runs", { project_id: pid, prompt });
+    let pid = selectedProjectId || (projects.length ? projects[0].id : (await api("POST", "/api/projects", { name: "Quick Project" })).id);
+
+    let persistedSettings = {};
+    try {
+      persistedSettings = await api("GET", "/api/settings");
+    } catch {
+      persistedSettings = {};
+    }
+
+    const quickMaxScenes = parseInt(document.getElementById("quick-max-scenes")?.value || "4", 10);
+    const runSettings = {
+      ...persistedSettings,
+      max_scenes: Number.isFinite(quickMaxScenes) ? quickMaxScenes : 4,
+    };
+
+    const run = await api("POST", "/api/runs", { project_id: pid, prompt, settings: runSettings });
     currentRunId = run.id;
     toast("Production run created!", "success");
     navigateTo("runs");
     showPipeline(run);
     streamLogs(run.id);
+    loadRuns(selectedProjectId);
   } catch (e) {
     toast("Failed to start run: " + e, "error");
   }
 }
 
+async function loadRuns(projectId = null) {
+  try {
+    if (projectId !== null && projectId !== undefined) {
+      selectedProjectId = projectId;
+      persistContext();
+      refreshScopeBadges();
+    }
+    const runs = await api("GET", "/api/runs");
+    const filtered = projectId ? runs.filter((r) => r.project_id === projectId) : runs;
+
+    const active = runs.filter((r) => r.status === "running" || r.status === "awaiting_approval").length;
+    document.getElementById("stat-runs").textContent = active;
+
+    const list = document.getElementById("run-list");
+    if (!filtered.length) {
+      list.innerHTML = '<p class="item-meta" style="padding:20px;text-align:center;">No productions yet for this scope.</p>';
+      return;
+    }
+
+    list.innerHTML = filtered.map((r) => `
+      <div class="item run-item" data-id="${r.id}">
+        <div>
+          <span class="item-name">${(r.prompt || "Untitled").slice(0, 80)}</span><br>
+          <span class="item-meta">Status: ${r.status} · Stage: ${r.current_stage}</span>
+        </div>
+        <span class="item-meta">${new Date(r.created_at).toLocaleString()}</span>
+      </div>
+    `).join("");
+
+    list.querySelectorAll(".run-item").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const runId = el.dataset.id;
+        const run = filtered.find((x) => x.id === runId);
+        if (!run) return;
+        showPipeline(run);
+        if (run.status === "running" || run.status === "awaiting_approval") {
+          streamLogs(runId);
+        } else {
+          loadRunResults(runId);
+        }
+      });
+    });
+  } catch {
+    // offline
+  }
+}
+
 function showPipeline(run) {
   document.getElementById("pipeline-view").style.display = "block";
+  document.getElementById("output-view").style.display = "none";
   document.getElementById("pipeline-run-id").textContent = run.id.slice(0, 8);
   // Reset stages
   document.querySelectorAll(".stage-node").forEach((s) => s.classList.remove("active", "completed", "failed"));
   // Hide video + results panels
+  document.getElementById("preview-panel").style.display = "none";
   document.getElementById("video-panel").style.display = "none";
   document.getElementById("results-panel").style.display = "none";
+  document.getElementById("preview-list").innerHTML = "";
+  previewClips = [];
   // Mark current
   const cur = document.querySelector(`.stage-node[data-stage="${run.current_stage}"]`);
   if (cur) cur.classList.add("active");
+}
+
+function appendPreviewClip(url, index, total) {
+  if (!url || previewClips.some((c) => c.url === url)) return;
+  previewClips.push({ url, index, total });
+
+  const outputView = document.getElementById("output-view");
+  const previewPanel = document.getElementById("preview-panel");
+  const previewPlayer = document.getElementById("preview-player");
+  const previewMeta = document.getElementById("preview-meta");
+  const previewList = document.getElementById("preview-list");
+
+  outputView.style.display = "block";
+  previewPanel.style.display = "block";
+
+  if (!previewPlayer.src) {
+    previewPlayer.src = `${url}?t=${Date.now()}`;
+  } else if (autoPlayPreview) {
+    previewPlayer.src = `${url}?t=${Date.now()}`;
+    previewPlayer.play().catch(() => {});
+  }
+
+  previewMeta.innerHTML = `<span>${previewClips.length} clip(s) ready</span><span>Latest: Scene ${index + 1}/${total}</span>`;
+
+  previewList.innerHTML = previewClips
+    .sort((a, b) => a.index - b.index)
+    .map((clip) => `
+      <div class="item preview-item" data-url="${clip.url}">
+        <div><span class="item-name">Scene ${clip.index + 1}</span></div>
+        <span class="item-meta">Preview</span>
+      </div>
+    `)
+    .join("");
+
+  previewList.querySelectorAll(".preview-item").forEach((el) => {
+    el.addEventListener("click", () => {
+      previewPlayer.src = `${el.dataset.url}?t=${Date.now()}`;
+      previewPlayer.play().catch(() => {});
+    });
+  });
 }
 
 function streamLogs(runId) {
@@ -184,11 +363,16 @@ function streamLogs(runId) {
       showApprovalModal(runId, data.stage);
     }
 
+    if (data.preview_clip_url) {
+      appendPreviewClip(data.preview_clip_url, data.preview_scene_index ?? 0, data.preview_scene_total ?? 0);
+    }
+
     // Terminal events
     if (data.type === "run_completed") {
-      toast("🎬 Production complete!", "success");
+      toast("Production complete.", "success");
       eventSource.close();
       loadRunResults(runId);
+      loadRuns(selectedProjectId);
     }
     if (data.type === "run_failed") {
       toast("Run failed: " + (data.error || "unknown"), "error");
@@ -205,6 +389,7 @@ function streamLogs(runId) {
 async function loadRunResults(runId) {
   try {
     const data = await api("GET", `/api/runs/${runId}/outputs`);
+    document.getElementById("output-view").style.display = "block";
     const resultsPanel = document.getElementById("results-panel");
     const content = document.getElementById("results-content");
     const videoPanel = document.getElementById("video-panel");
@@ -224,25 +409,54 @@ async function loadRunResults(runId) {
       const dur = renderOutput.duration_seconds ? `${Math.round(renderOutput.duration_seconds)}s` : "—";
       const size = renderOutput.file_size_bytes ? `${(renderOutput.file_size_bytes / 1024).toFixed(0)} KB` : "—";
       const scenes = renderOutput.scene_count || "—";
-      videoMeta.innerHTML = `<span>⏱ ${dur}</span><span>📐 ${scenes} scenes</span><span>💾 ${size}</span>`;
+      videoMeta.innerHTML = `<span>Duration ${dur}</span><span>Scenes ${scenes}</span><span>Size ${size}</span>`;
+
+      const previewPaths = renderOutput.preview_clip_paths || [];
+      const previewUrls = previewPaths.map((p) => `http://127.0.0.1:9420/media/exports/${runId}/${p.split('/').pop()}`);
+      if (previewUrls.length) {
+        const previewPanel = document.getElementById("preview-panel");
+        const previewPlayer = document.getElementById("preview-player");
+        const previewMeta = document.getElementById("preview-meta");
+        const previewList = document.getElementById("preview-list");
+        previewPanel.style.display = "block";
+        previewPlayer.src = `${previewUrls[0]}?t=${Date.now()}`;
+        previewMeta.innerHTML = `<span>${previewUrls.length} clip(s)</span><span>Run ${runId.slice(0, 8)}</span>`;
+        previewList.innerHTML = previewUrls.map((u, i) => `
+          <div class="item preview-item" data-url="${u}">
+            <div><span class="item-name">Scene ${i + 1}</span></div>
+            <span class="item-meta">Preview</span>
+          </div>
+        `).join("");
+        previewList.querySelectorAll(".preview-item").forEach((el) => {
+          el.addEventListener("click", () => {
+            previewPlayer.src = `${el.dataset.url}?t=${Date.now()}`;
+            previewPlayer.play().catch(() => {});
+          });
+        });
+        if (autoPlayPreview && previewUrls.length) {
+          const latest = previewUrls[previewUrls.length - 1];
+          previewPlayer.src = `${latest}?t=${Date.now()}`;
+          previewPlayer.play().catch(() => {});
+        }
+      }
     }
 
     // ── Stage-by-stage results ──
     resultsPanel.style.display = "block";
 
     const stageLabels = {
-      intake: "📋 Intake",
-      planning: "🗂️ Production Plan",
-      research: "🔍 Research",
-      script: "📝 Script",
-      storyboard: "🎨 Storyboard",
-      assets: "🖼️ Assets",
-      audio: "🔊 Audio",
-      edit_assembly: "✂️ Edit Assembly",
-      qa: "✅ QA Report",
-      render: "🎥 Render",
-      package: "📦 Package",
-      export: "🚀 Export",
+      intake: "Intake",
+      planning: "Production Plan",
+      research: "Research",
+      script: "Script",
+      storyboard: "Storyboard",
+      assets: "Assets",
+      audio: "Audio",
+      edit_assembly: "Edit Assembly",
+      qa: "QA Report",
+      render: "Render",
+      package: "Package",
+      export: "Export",
     };
 
     let html = "";
@@ -303,6 +517,89 @@ async function loadRunResults(runId) {
   }
 }
 
+// --- Media Library ---
+async function loadMediaLibrary() {
+  const list = document.getElementById("artifact-list");
+  const filterEl = document.getElementById("artifact-project-filter");
+  list.innerHTML = '<p class="item-meta" style="padding:20px;text-align:center;">Loading media…</p>';
+  try {
+    const projects = await api("GET", "/api/projects");
+    const runs = await api("GET", "/api/runs");
+
+    if (filterEl) {
+      const current = mediaProjectFilter || "all";
+      filterEl.innerHTML = [
+        '<option value="all">All projects</option>',
+        ...projects.map((p) => `<option value="${p.id}">${p.name}</option>`),
+      ].join("");
+      filterEl.value = current;
+    }
+    refreshScopeBadges();
+
+    const completed = runs.filter((r) => r.status === "completed");
+    const completedFiltered = mediaProjectFilter === "all"
+      ? completed
+      : completed.filter((r) => r.project_id === mediaProjectFilter);
+    const mediaEntries = [];
+
+    for (const run of completedFiltered.slice(0, 30)) {
+      try {
+        const outputs = await api("GET", `/api/runs/${run.id}/outputs`);
+        const render = outputs.outputs?.render;
+        if (render?.rendered) {
+          mediaEntries.push({
+            runId: run.id,
+            prompt: run.prompt,
+            duration: render.duration_seconds,
+            scenes: render.scene_count,
+            size: render.file_size_bytes,
+            url: `http://127.0.0.1:9420/media/exports/${run.id}/render.mp4`,
+          });
+        }
+      } catch {
+        // ignore broken runs
+      }
+    }
+
+    document.getElementById("stat-artifacts").textContent = String(mediaEntries.length);
+    document.getElementById("stat-exports").textContent = String(mediaEntries.length);
+
+    if (!mediaEntries.length) {
+      list.innerHTML = '<p class="item-meta" style="padding:20px;text-align:center;">No rendered media found yet.</p>';
+      return;
+    }
+
+    list.innerHTML = mediaEntries.map((m) => `
+      <div class="item media-item" data-run-id="${m.runId}" data-url="${m.url}">
+        <div>
+          <span class="item-name">${(m.prompt || "Untitled run").slice(0, 80)}</span><br>
+          <span class="item-meta">Run ${m.runId.slice(0, 8)} · ${m.scenes || "—"} scenes · ${Math.round(m.duration || 0)}s</span>
+        </div>
+        <span class="item-meta">${m.size ? `${Math.round(m.size / 1024)} KB` : "—"}</span>
+      </div>
+    `).join("");
+
+    list.querySelectorAll(".media-item").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const runId = el.dataset.runId;
+        navigateTo("runs");
+        try {
+          const runsNow = await api("GET", "/api/runs");
+          const run = runsNow.find((r) => r.id === runId);
+          if (run) {
+            showPipeline(run);
+            await loadRunResults(runId);
+          }
+        } catch {
+          // ignore
+        }
+      });
+    });
+  } catch {
+    list.innerHTML = '<p class="item-meta" style="padding:20px;text-align:center;">Media Library is unavailable while backend is offline.</p>';
+  }
+}
+
 // --- Approvals ---
 function showApprovalModal(runId, stage) {
   document.getElementById("approval-modal").style.display = "flex";
@@ -328,6 +625,9 @@ async function loadSettings() {
     if (s.openrouter_api_key) document.getElementById("setting-api-key").value = s.openrouter_api_key;
     if (s.model) document.getElementById("setting-model").value = s.model;
     if (s.ffmpeg_path) document.getElementById("setting-ffmpeg").value = s.ffmpeg_path;
+    document.getElementById("setting-max-scenes").value = s.max_scenes ?? 4;
+    document.getElementById("quick-max-scenes").value = s.max_scenes ?? 4;
+    document.getElementById("quick-max-scenes-value").textContent = String(s.max_scenes ?? 4);
   } catch { /* offline */ }
 }
 
@@ -338,6 +638,7 @@ async function saveSettings(e) {
     openrouter_api_key: document.getElementById("setting-api-key").value,
     model: document.getElementById("setting-model").value,
     ffmpeg_path: document.getElementById("setting-ffmpeg").value,
+    max_scenes: parseInt(document.getElementById("setting-max-scenes").value || "4", 10),
   });
   toast("Settings saved!", "success");
 }
@@ -350,6 +651,8 @@ window.addEventListener("DOMContentLoaded", () => {
       const page = link.dataset.page;
       navigateTo(page);
       if (page === "projects") loadProjects();
+      if (page === "runs") loadRuns(selectedProjectId);
+      if (page === "artifacts") loadMediaLibrary();
       if (page === "settings") loadSettings();
     });
   });
@@ -359,9 +662,35 @@ window.addEventListener("DOMContentLoaded", () => {
     const p = document.getElementById("quick-prompt").value.trim();
     if (p) startQuickRun(p);
   });
+  document.getElementById("quick-max-scenes").addEventListener("input", (e) => {
+    document.getElementById("quick-max-scenes-value").textContent = e.target.value;
+  });
   document.getElementById("btn-new-project").addEventListener("click", createProject);
   document.getElementById("settings-form").addEventListener("submit", saveSettings);
+  const autoplayToggle = document.getElementById("preview-autoplay-toggle");
+  if (autoplayToggle) {
+    autoPlayPreview = localStorage.getItem("preview.autoplay") !== "0";
+    autoplayToggle.checked = autoPlayPreview;
+    autoplayToggle.addEventListener("change", (e) => {
+      autoPlayPreview = !!e.target.checked;
+      localStorage.setItem("preview.autoplay", autoPlayPreview ? "1" : "0");
+    });
+  }
+  const mediaFilterEl = document.getElementById("artifact-project-filter");
+  if (mediaFilterEl) {
+    mediaFilterEl.addEventListener("change", (e) => {
+      mediaProjectFilter = e.target.value;
+      persistContext();
+      refreshScopeBadges();
+      loadMediaLibrary();
+    });
+  }
+  restoreContext();
+  refreshScopeBadges();
   checkBackendHealth();
+  loadProjects();
+  loadRuns();
+  loadMediaLibrary();
   // Keyboard shortcuts
   document.addEventListener("keydown", (e) => {
     if (e.metaKey || e.ctrlKey) {

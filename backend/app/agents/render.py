@@ -19,6 +19,7 @@ import httpx
 
 from app.agents.base import checkpoint, record_step, emit_progress, think
 from app.schemas.run import Stage
+from app.runtime.event_bus import event_bus
 
 # fal.ai configuration
 FAL_API_BASE = "https://queue.fal.run"
@@ -57,6 +58,15 @@ def _get_fal_key() -> str:
 
 def _get_model() -> str:
     return os.getenv("FAL_VIDEO_MODEL", "").strip() or DEFAULT_MODELS[0]
+
+
+def _resolve_max_scenes(state: dict) -> int:
+    raw = (state.get("settings") or {}).get("max_scenes", 4)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 4
+    return max(1, min(value, 8))
 
 
 async def _submit_video_job(
@@ -115,7 +125,7 @@ async def _poll_until_done(
             raise RuntimeError(f"fal.ai job {status}: {status_data}")
 
         if elapsed % 15 == 0:
-            await think(run_id, stage, f"⏳ {scene_label} — waiting ({elapsed}s)…")
+            await think(run_id, stage, f"{scene_label} — waiting ({elapsed}s)…")
 
     raise TimeoutError(f"fal.ai job timed out after {FAL_TIMEOUT}s")
 
@@ -160,13 +170,13 @@ async def _generate_scene_video(
         scene_label = f"Scene {scene_idx + 1}/{total_scenes}"
         short_model = model.split("/")[-2] if "/" in model else model
 
-        await think(run_id, stage, f"🚀 Submitting {scene_label} to fal.ai ({short_model})…")
+        await think(run_id, stage, f"Submitting {scene_label} to fal.ai ({short_model})…")
 
         job_info = await _submit_video_job(
             client, model, full_prompt, fal_key, duration=fal_duration,
         )
         request_id = job_info.get("request_id", "???")
-        await think(run_id, stage, f"📡 {scene_label} queued (id: {request_id[:12]}…)")
+        await think(run_id, stage, f"{scene_label} queued (id: {request_id[:12]}…)")
 
         result = await _poll_until_done(
             client, job_info, fal_key, run_id, stage, scene_label,
@@ -182,7 +192,7 @@ async def _generate_scene_video(
         if not video_url:
             raise RuntimeError(f"No video URL in fal.ai response: {list(result.keys())}")
 
-        await think(run_id, stage, f"⬇️ Downloading {scene_label} video…")
+        await think(run_id, stage, f"Downloading {scene_label} video…")
         await _download_video(client, video_url, out_path)
         return True
 
@@ -229,46 +239,46 @@ async def _concat_clips(ffmpeg: str, clip_paths: list, out_path: str) -> None:
         raise RuntimeError(f"FFmpeg concat failed ({proc.returncode}): {stderr.decode()[-500:]}")
 
     os.remove(list_file)
-    for p in clip_paths:
-        try:
-            os.remove(p)
-        except OSError:
-            pass
 
 
 # ── Extract scenes from pipeline state ──────────────────────────────────────
 
 def _extract_scenes(state: dict) -> list:
-    sb = state["outputs"].get("storyboard", {})
-    if sb.get("shots"):
-        return [
-            {"title": s.get("shot_type", f"Shot {i+1}"),
-             "body": s.get("description", ""),
-             "duration": max(float(s.get("duration_seconds", s.get("duration", 5))), 3)}
-            for i, s in enumerate(sb["shots"])
-        ]
+    max_scenes = _resolve_max_scenes(state)
 
     sc = state["outputs"].get("script", {})
     scenes = sc.get("scenes", sc.get("script_lines", []))
     if scenes:
-        return [
+        extracted = [
             {"title": f"Scene {s.get('id', i+1)}",
              "body": s.get("text", s.get("description", "")),
              "duration": max(float(s.get("duration_seconds", s.get("duration", 5))), 3)}
             for i, s in enumerate(scenes)
         ]
+        return extracted[:max_scenes]
 
     plan = state["outputs"].get("planning", {})
     plan_scenes = plan.get("scenes", [])
     if plan_scenes:
-        return [
+        extracted = [
             {"title": f"Scene {s.get('id', i+1)}",
              "body": s.get("description", str(s)),
              "duration": max(float(s.get("duration", 5)), 3)}
             for i, s in enumerate(plan_scenes)
         ]
+        return extracted[:max_scenes]
 
-    return [{"title": "Director's Cut", "body": state.get("prompt", "Video production"), "duration": 5}]
+    sb = state["outputs"].get("storyboard", {})
+    if sb.get("shots"):
+        extracted = [
+            {"title": s.get("shot_type", f"Shot {i+1}"),
+             "body": s.get("description", ""),
+             "duration": max(float(s.get("duration_seconds", s.get("duration", 5))), 3)}
+            for i, s in enumerate(sb["shots"])
+        ]
+        return extracted[:max_scenes]
+
+    return [{"title": "Director's Cut", "body": state.get("prompt", "Video production"), "duration": 5}][:max_scenes]
 
 
 # ── Main render node ────────────────────────────────────────────────────────
@@ -311,10 +321,11 @@ async def render_node(state: dict) -> dict:
     final_path = str(export_dir / "render.mp4")
 
     scenes = _extract_scenes(state)
+    max_scenes = _resolve_max_scenes(state)
     model = _get_model()
     short_model = model.split("/")[-2] if "/" in model else model
     await think(run_id, stage,
-                f"🎬 Generating {len(scenes)} AI video clips via fal.ai ({short_model})…")
+                f"Generating {len(scenes)} AI video clips via fal.ai ({short_model}), max scenes={max_scenes}…")
 
     # ── Generate video clips for each scene ──
     raw_paths: List[str] = []
@@ -327,12 +338,19 @@ async def render_node(state: dict) -> dict:
                 run_id, stage,
             )
             if success and os.path.exists(raw_path) and os.path.getsize(raw_path) > 1000:
-                await think(run_id, stage, f"✅ Scene {i+1} video generated")
+                await think(run_id, stage, f"Scene {i+1} video generated")
                 raw_paths.append(raw_path)
+                await event_bus.emit(run_id, "stage_progress", {
+                    "stage": stage,
+                    "message": f"Preview ready for scene {i+1}",
+                    "preview_clip_url": f"http://127.0.0.1:9420/media/exports/{run_id}/_raw_{i:03d}.mp4",
+                    "preview_scene_index": i,
+                    "preview_scene_total": len(scenes),
+                })
             else:
-                await think(run_id, stage, f"⚠️ Scene {i+1} — empty or missing video")
+                await think(run_id, stage, f"Scene {i+1} — empty or missing video")
         except Exception as e:
-            await think(run_id, stage, f"⚠️ Scene {i+1} failed: {str(e)[:200]}")
+            await think(run_id, stage, f"Scene {i+1} failed: {str(e)[:200]}")
 
     if not raw_paths:
         state["outputs"][stage] = {"rendered": False, "error": "All scene video generations failed"}
@@ -345,24 +363,16 @@ async def render_node(state: dict) -> dict:
     clip_paths: List[str] = []
     for i, raw in enumerate(raw_paths):
         norm_path = str(export_dir / f"_norm_{i:03d}.mp4")
-        await think(run_id, stage, f"🔄 Normalizing clip {i+1}/{len(raw_paths)}…")
+        await think(run_id, stage, f"Normalizing clip {i+1}/{len(raw_paths)}…")
         try:
             await _normalize_clip(ffmpeg, raw, norm_path)
             clip_paths.append(norm_path)
         except Exception as e:
-            await think(run_id, stage, f"⚠️ Normalize failed clip {i+1}: {str(e)[:150]}")
+            await think(run_id, stage, f"Normalize failed clip {i+1}: {str(e)[:150]}")
             clip_paths.append(raw)  # fallback to raw
 
-    # Cleanup raw files
-    for p in raw_paths:
-        if p not in clip_paths:
-            try:
-                os.remove(p)
-            except OSError:
-                pass
-
     # ── Concatenate ──
-    await think(run_id, stage, "🔗 Concatenating clips into final video…", delay=0.5)
+    await think(run_id, stage, "Concatenating clips into final video…", delay=0.5)
     if len(clip_paths) == 1:
         os.rename(clip_paths[0], final_path)
     else:
@@ -371,7 +381,7 @@ async def render_node(state: dict) -> dict:
     total_dur = sum(s["duration"] for s in scenes)
     file_size = os.path.getsize(final_path) if os.path.exists(final_path) else 0
 
-    await think(run_id, stage, f"✅ Video rendered: {len(scenes)} scenes, {file_size/1024/1024:.1f} MB")
+    await think(run_id, stage, f"Video rendered: {len(scenes)} scenes, {file_size/1024/1024:.1f} MB")
 
     state["outputs"][stage] = {
         "rendered": True,
@@ -379,6 +389,7 @@ async def render_node(state: dict) -> dict:
         "duration_seconds": total_dur,
         "file_size_bytes": file_size,
         "scene_count": len(scenes),
+        "preview_clip_paths": [f"data/exports/{run_id}/_raw_{i:03d}.mp4" for i in range(len(raw_paths))],
         "model": model,
     }
     state["current_stage"] = Stage.PACKAGE.value

@@ -241,7 +241,7 @@ async def _finish_run(run_id: str, state: dict):
     await db.close()
     await event_bus.emit(run_id, "run_completed", {
         "run_id": run_id,
-        "message": "🎬 Production complete!",
+        "message": "Production complete.",
     })
     await event_bus.close(run_id)
 
