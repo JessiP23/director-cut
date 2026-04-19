@@ -42,7 +42,7 @@ STAGE_ORDER = [
     Stage.QA, Stage.RENDER, Stage.PACKAGE, Stage.EXPORT,
 ]
 
-APPROVAL_GATES = {Stage.SCRIPT, Stage.STORYBOARD, Stage.EDIT, Stage.QA}
+APPROVAL_GATES: set = set()  # disabled — pipeline runs straight through to render
 
 NODE_MAP = {
     Stage.INTAKE: intake_node,
@@ -146,10 +146,12 @@ async def _execute(run_id: str, state: dict):
             })
 
             # ── Run the agent node (with timeout) ──
+            # Render needs much longer for AI video generation
+            stage_timeout = 1800 if stage == Stage.RENDER else 300
             try:
-                state = await asyncio.wait_for(node_fn(state), timeout=300)
+                state = await asyncio.wait_for(node_fn(state), timeout=stage_timeout)
             except asyncio.TimeoutError:
-                raise RuntimeError(f"Stage {stage_name} timed out (300 s)")
+                raise RuntimeError(f"Stage {stage_name} timed out ({stage_timeout} s)")
 
             # ── Emit "stage complete" to SSE ──
             await event_bus.emit(run_id, "stage_complete", {

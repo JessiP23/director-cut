@@ -1,44 +1,38 @@
-"""Render agent – produce video from storyboard using Pillow frames + FFmpeg.
+"""Render agent – produce video with AI-generated clips via fal.ai + FFmpeg.
 
-Generates visually rich frames with gradients, text, animated elements using
-Pillow, then pipes them into FFmpeg as a raw image sequence.  No drawtext or
-libass filter required — all rendering happens in Python.
+For each scene we:
+1. Call fal.ai text-to-video API to generate a real video clip
+2. Download the resulting MP4
+3. Concatenate all clips with FFmpeg into the final render
+
+Supports multiple fal.ai models with automatic fallback.
 """
 from __future__ import annotations
 
 import asyncio
-import math
 import os
 import shutil
-import textwrap
 from pathlib import Path
-from typing import List, Tuple
+from typing import List
 
-from PIL import Image, ImageDraw, ImageFont
+import httpx
 
 from app.agents.base import checkpoint, record_step, emit_progress, think
 from app.schemas.run import Stage
 
-# ── Visual theme ────────────────────────────────────────────────────────────
-
-# Rich gradient palettes per scene (top-colour, bottom-colour)
-SCENE_PALETTES: List[Tuple[Tuple[int,...], Tuple[int,...]]] = [
-    ((15, 12, 41),   (48, 43, 99)),    # deep indigo
-    ((20, 30, 48),   (36, 59, 85)),    # midnight blue
-    ((44, 62, 80),   (52, 152, 219)),  # ocean
-    ((72, 52, 117),  (153, 51, 153)),  # purple haze
-    ((233, 69, 96),  (72, 52, 117)),   # sunset magenta
-    ((13, 115, 119), (20, 167, 108)),  # teal forest
-    ((30, 60, 114),  (42, 82, 152)),   # steel blue
-    ((245, 166, 35), (233, 69, 96)),   # amber fire
+# fal.ai configuration
+FAL_API_BASE = "https://queue.fal.run"
+# Model priority – user can override via FAL_VIDEO_MODEL env var.
+DEFAULT_MODELS = [
+    "fal-ai/minimax/hailuo-02/standard/text-to-video",
+    "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
+    "fal-ai/wan/v2.2-a14b/text-to-video",
 ]
-
-ACCENT = (255, 255, 255)
-DIM_WHITE = (200, 200, 200)
-WIDTH, HEIGHT, FPS = 1920, 1080, 30
+FAL_POLL_INTERVAL = 5   # seconds between status checks
+FAL_TIMEOUT = 600        # max wait per clip (10 min)
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────────
+# ── FFmpeg discovery ────────────────────────────────────────────────────────
 
 def _find_ffmpeg() -> str:
     custom = os.getenv("FFMPEG_PATH", "").strip()
@@ -52,170 +46,161 @@ def _find_ffmpeg() -> str:
     )
 
 
-def _get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    """Try system fonts, fall back to default."""
-    candidates = [
-        "/System/Library/Fonts/Supplemental/Arial Bold.ttf" if bold else "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ]
-    for path in candidates:
-        if path and os.path.exists(path):
-            try:
-                return ImageFont.truetype(path, size)
-            except Exception:
-                continue
-    return ImageFont.load_default()
+# ── fal.ai helpers ──────────────────────────────────────────────────────────
+
+def _get_fal_key() -> str:
+    key = (os.getenv("FAL_KEY") or os.getenv("FAL_API_KEY") or "").strip()
+    if not key or key == "YOUR_FAL_KEY_HERE":
+        raise RuntimeError("FAL_KEY not set in .env — add your fal.ai API key.")
+    return key
 
 
-def _lerp_color(c1: Tuple[int,...], c2: Tuple[int,...], t: float) -> Tuple[int,...]:
-    return tuple(int(a + (b - a) * t) for a, b in zip(c1, c2))
+def _get_model() -> str:
+    return os.getenv("FAL_VIDEO_MODEL", "").strip() or DEFAULT_MODELS[0]
 
 
-def _draw_gradient(img: Image.Image, top: Tuple[int,...], bottom: Tuple[int,...]):
-    draw = ImageDraw.Draw(img)
-    for y in range(img.height):
-        t = y / max(img.height - 1, 1)
-        draw.line([(0, y), (img.width, y)], fill=_lerp_color(top, bottom, t))
+async def _submit_video_job(
+    client: httpx.AsyncClient,
+    model: str,
+    prompt: str,
+    fal_key: str,
+    duration: str = "5",
+    aspect_ratio: str = "16:9",
+) -> dict:
+    """Submit a text-to-video job to fal.ai queue. Returns job info dict with URLs."""
+    url = f"{FAL_API_BASE}/{model}"
+    payload = {
+        "prompt": prompt,
+        "duration": duration,
+        "aspect_ratio": aspect_ratio,
+        "negative_prompt": "blur, distort, low quality, watermark, text overlay",
+    }
+    headers = {
+        "Authorization": f"Key {fal_key}",
+        "Content-Type": "application/json",
+    }
+    resp = await client.post(url, json=payload, headers=headers, timeout=30)
+    resp.raise_for_status()
+    return resp.json()  # has request_id, status_url, response_url
 
 
-def _draw_particles(draw: ImageDraw.Draw, frame: int, count: int = 40):
-    import random
-    rng = random.Random(42)
-    for _ in range(count):
-        bx, by = rng.randint(0, WIDTH), rng.randint(0, HEIGHT)
-        speed = rng.uniform(0.3, 1.5)
-        size = rng.randint(1, 4)
-        alpha_base = rng.randint(40, 120)
-        y = (by - int(frame * speed)) % HEIGHT
-        x = bx + int(math.sin(frame * 0.02 + bx) * 20)
-        alpha = int(alpha_base * (0.5 + 0.5 * math.sin(frame * 0.05 + bx)))
-        draw.ellipse([x - size, y - size, x + size, y + size],
-                     fill=(255, 255, 255, max(0, min(255, alpha))))
+async def _poll_until_done(
+    client: httpx.AsyncClient,
+    job_info: dict,
+    fal_key: str,
+    run_id: str,
+    stage: str,
+    scene_label: str,
+) -> dict:
+    """Poll fal.ai queue until the job completes. Returns the result dict."""
+    status_url = job_info["status_url"]
+    result_url = job_info["response_url"]
+    headers = {"Authorization": f"Key {fal_key}"}
+
+    elapsed = 0
+    while elapsed < FAL_TIMEOUT:
+        await asyncio.sleep(FAL_POLL_INTERVAL)
+        elapsed += FAL_POLL_INTERVAL
+
+        resp = await client.get(status_url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        status_data = resp.json()
+        status = status_data.get("status", "UNKNOWN")
+
+        if status == "COMPLETED":
+            res = await client.get(result_url, headers=headers, timeout=15)
+            res.raise_for_status()
+            return res.json()
+        elif status in ("FAILED", "CANCELLED"):
+            raise RuntimeError(f"fal.ai job {status}: {status_data}")
+
+        if elapsed % 15 == 0:
+            await think(run_id, stage, f"⏳ {scene_label} — waiting ({elapsed}s)…")
+
+    raise TimeoutError(f"fal.ai job timed out after {FAL_TIMEOUT}s")
 
 
-def _draw_scene_number(draw: ImageDraw.Draw, idx: int, total: int):
-    font = _get_font(24)
-    text = f"SCENE {idx + 1} / {total}"
-    bbox = draw.textbbox((0, 0), text, font=font)
-    draw.text((WIDTH - (bbox[2] - bbox[0]) - 40, 30), text, fill=(255, 255, 255, 140), font=font)
+async def _download_video(client: httpx.AsyncClient, video_url: str, out_path: str) -> None:
+    """Download a video file from a URL."""
+    async with client.stream("GET", video_url, timeout=60, follow_redirects=True) as resp:
+        resp.raise_for_status()
+        with open(out_path, "wb") as f:
+            async for chunk in resp.aiter_bytes(chunk_size=65536):
+                f.write(chunk)
 
 
-def _draw_progress_bar(draw: ImageDraw.Draw, progress: float):
-    y = HEIGHT - 6
-    draw.rectangle([0, y, WIDTH, y + 4], fill=(255, 255, 255, 30))
-    draw.rectangle([0, y, int(WIDTH * progress), y + 4], fill=(255, 255, 255, 100))
-
-
-def _render_frame(
-    scene_idx: int, total_scenes: int,
-    title: str, body: str,
-    frame_in_scene: int, total_frames: int,
-    palette: Tuple[Tuple[int,...], Tuple[int,...]],
-) -> bytes:
-    """Render one frame as raw RGB bytes."""
-    img = Image.new("RGB", (WIDTH, HEIGHT))
-    t = frame_in_scene / max(total_frames - 1, 1)
-
-    # Animated gradient
-    top = _lerp_color(palette[0], palette[1], t * 0.15)
-    bot = _lerp_color(palette[1], palette[0], t * 0.15)
-    _draw_gradient(img, top, bot)
-
-    img = img.convert("RGBA")
-    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-
-    _draw_particles(draw, frame_in_scene)
-    _draw_scene_number(draw, scene_idx, total_scenes)
-
-    # Title with fade-in
-    title_font = _get_font(64, bold=True)
-    fade = min(1.0, frame_in_scene / (FPS * 0.5)) if total_frames > FPS else 1.0
-    title_alpha = int(255 * fade)
-    wrapped_title = textwrap.fill(title, width=35)
-    bbox = draw.textbbox((0, 0), wrapped_title, font=title_font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    tx, ty = (WIDTH - tw) // 2, int(HEIGHT * 0.22) - th // 2
-    draw.text((tx + 3, ty + 3), wrapped_title, fill=(0, 0, 0, title_alpha // 2), font=title_font)
-    draw.text((tx, ty), wrapped_title, fill=(255, 255, 255, title_alpha), font=title_font)
-
-    # Decorative line
-    line_y = ty + th + 20
-    line_w = min(tw + 40, int(WIDTH * 0.6))
-    line_x = (WIDTH - line_w) // 2
-    line_progress = min(1.0, frame_in_scene / (FPS * 0.8))
-    draw.rectangle([line_x, line_y, line_x + int(line_w * line_progress), line_y + 3],
-                   fill=(255, 255, 255, int(180 * fade)))
-
-    # Body text with fade-in
-    body_font = _get_font(36)
-    body_fade = min(1.0, max(0, (frame_in_scene - FPS * 0.3)) / (FPS * 0.5))
-    if body and body_fade > 0:
-        body_alpha = int(220 * body_fade)
-        wrapped = textwrap.fill(body, width=55)
-        lines = wrapped.split("\n")[:8]
-        body_text = "\n".join(lines)
-        bb = draw.textbbox((0, 0), body_text, font=body_font)
-        bw, bh = bb[2] - bb[0], bb[3] - bb[1]
-        bx, by = (WIDTH - bw) // 2, int(HEIGHT * 0.48)
-        pad = 30
-        draw.rounded_rectangle([bx - pad, by - pad, bx + bw + pad, by + bh + pad],
-                               radius=12, fill=(0, 0, 0, int(120 * body_fade)))
-        draw.text((bx, by), body_text, fill=(220, 220, 220, body_alpha), font=body_font)
-
-    _draw_progress_bar(draw, (scene_idx + t) / total_scenes)
-
-    img = Image.alpha_composite(img, overlay).convert("RGB")
-    return img.tobytes()
-
-
-async def _generate_scene_clip(
-    ffmpeg: str, out_path: str,
-    scene_idx: int, total_scenes: int,
-    title: str, body: str,
+async def _generate_scene_video(
+    scene_prompt: str,
+    context: str,
+    out_path: str,
+    scene_idx: int,
+    total_scenes: int,
     duration: float,
-    palette: Tuple[Tuple[int,...], Tuple[int,...]],
-) -> None:
-    """Generate a scene clip by piping Pillow frames into FFmpeg."""
-    total_frames = int(duration * FPS)
+    run_id: str,
+    stage: str,
+) -> bool:
+    """Generate a video clip for one scene via fal.ai. Returns True on success."""
+    fal_key = _get_fal_key()
+    model = _get_model()
 
+    full_prompt = (
+        f"Cinematic wide shot: {scene_prompt}. "
+        f"Context: {context}. "
+        f"Photorealistic, dramatic lighting, smooth camera movement, high production value."
+    )
+
+    # fal.ai duration is "5" or "10"
+    fal_duration = "10" if duration > 7 else "5"
+
+    async with httpx.AsyncClient() as client:
+        scene_label = f"Scene {scene_idx + 1}/{total_scenes}"
+        short_model = model.split("/")[-2] if "/" in model else model
+
+        await think(run_id, stage, f"🚀 Submitting {scene_label} to fal.ai ({short_model})…")
+
+        job_info = await _submit_video_job(
+            client, model, full_prompt, fal_key, duration=fal_duration,
+        )
+        request_id = job_info.get("request_id", "???")
+        await think(run_id, stage, f"📡 {scene_label} queued (id: {request_id[:12]}…)")
+
+        result = await _poll_until_done(
+            client, job_info, fal_key, run_id, stage, scene_label,
+        )
+
+        # Extract video URL from result
+        video_url = None
+        if "video" in result:
+            video_url = result["video"].get("url")
+        elif "output" in result:
+            video_url = result["output"].get("video", {}).get("url")
+
+        if not video_url:
+            raise RuntimeError(f"No video URL in fal.ai response: {list(result.keys())}")
+
+        await think(run_id, stage, f"⬇️ Downloading {scene_label} video…")
+        await _download_video(client, video_url, out_path)
+        return True
+
+
+# ── Normalize + Concat ──────────────────────────────────────────────────────
+
+async def _normalize_clip(ffmpeg: str, in_path: str, out_path: str) -> None:
+    """Re-encode a clip to consistent format for concatenation."""
     cmd = [
-        ffmpeg, "-y",
-        "-f", "rawvideo", "-pix_fmt", "rgb24",
-        "-s", f"{WIDTH}x{HEIGHT}", "-r", str(FPS),
-        "-i", "pipe:0",
-        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-        "-t", str(duration),
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-shortest",
+        ffmpeg, "-y", "-i", in_path,
+        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+        "-pix_fmt", "yuv420p", "-r", "30", "-s", "1920x1080",
+        "-c:a", "aac", "-ar", "44100", "-ac", "2",
         "-movflags", "+faststart",
         out_path,
     ]
-
     proc = await asyncio.create_subprocess_exec(
-        *cmd, stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
-
-    loop = asyncio.get_event_loop()
-    for f in range(total_frames):
-        frame_bytes = await loop.run_in_executor(
-            None, _render_frame, scene_idx, total_scenes, title, body, f, total_frames, palette,
-        )
-        try:
-            proc.stdin.write(frame_bytes)
-            await proc.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError):
-            break
-
-    proc.stdin.close()
-    await proc.stdin.wait_closed()
     _, stderr = await proc.communicate()
-
     if proc.returncode != 0:
-        raise RuntimeError(f"FFmpeg scene failed ({proc.returncode}): {stderr.decode()[-500:]}")
+        raise RuntimeError(f"FFmpeg normalize failed: {stderr.decode()[-300:]}")
 
 
 async def _concat_clips(ffmpeg: str, clip_paths: list, out_path: str) -> None:
@@ -232,7 +217,6 @@ async def _concat_clips(ffmpeg: str, clip_paths: list, out_path: str) -> None:
         "-movflags", "+faststart",
         out_path,
     ]
-
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
@@ -248,13 +232,15 @@ async def _concat_clips(ffmpeg: str, clip_paths: list, out_path: str) -> None:
             pass
 
 
+# ── Extract scenes from pipeline state ──────────────────────────────────────
+
 def _extract_scenes(state: dict) -> list:
     sb = state["outputs"].get("storyboard", {})
     if sb.get("shots"):
         return [
-            {"title": f"Shot {s.get('scene_id', i+1)}",
+            {"title": s.get("shot_type", f"Shot {i+1}"),
              "body": s.get("description", ""),
-             "duration": max(float(s.get("duration_seconds", s.get("duration", 4))), 2)}
+             "duration": max(float(s.get("duration_seconds", s.get("duration", 5))), 3)}
             for i, s in enumerate(sb["shots"])
         ]
 
@@ -264,7 +250,7 @@ def _extract_scenes(state: dict) -> list:
         return [
             {"title": f"Scene {s.get('id', i+1)}",
              "body": s.get("text", s.get("description", "")),
-             "duration": max(float(s.get("duration_seconds", s.get("duration", 5))), 2)}
+             "duration": max(float(s.get("duration_seconds", s.get("duration", 5))), 3)}
             for i, s in enumerate(scenes)
         ]
 
@@ -274,18 +260,22 @@ def _extract_scenes(state: dict) -> list:
         return [
             {"title": f"Scene {s.get('id', i+1)}",
              "body": s.get("description", str(s)),
-             "duration": max(float(s.get("duration", 5)), 2)}
+             "duration": max(float(s.get("duration", 5)), 3)}
             for i, s in enumerate(plan_scenes)
         ]
 
     return [{"title": "Director's Cut", "body": state.get("prompt", "Video production"), "duration": 5}]
 
 
+# ── Main render node ────────────────────────────────────────────────────────
+
 async def render_node(state: dict) -> dict:
     run_id = state["run_id"]
     stage = Stage.RENDER.value
+    prompt_context = state.get("prompt", "video production")
     await emit_progress(run_id, stage, "Rendering video…")
 
+    # ── Check FFmpeg ──
     await think(run_id, stage, "Locating FFmpeg binary…")
     try:
         ffmpeg = _find_ffmpeg()
@@ -298,6 +288,18 @@ async def render_node(state: dict) -> dict:
         await emit_progress(run_id, stage, f"Render skipped — {e}")
         return state
 
+    # ── Check FAL_KEY ──
+    try:
+        _get_fal_key()
+    except RuntimeError as e:
+        await think(run_id, stage, f"⚠️ {e}")
+        state["outputs"][stage] = {"rendered": False, "error": str(e)}
+        state["current_stage"] = Stage.PACKAGE.value
+        await record_step(run_id, stage, "failed", state["outputs"][stage], error=str(e))
+        await checkpoint(state, stage)
+        await emit_progress(run_id, stage, str(e))
+        return state
+
     await think(run_id, stage, f"Using FFmpeg at: {ffmpeg}")
 
     export_dir = Path("data") / "exports" / run_id
@@ -305,32 +307,58 @@ async def render_node(state: dict) -> dict:
     final_path = str(export_dir / "render.mp4")
 
     scenes = _extract_scenes(state)
-    await think(run_id, stage, f"Rendering {len(scenes)} scenes with Pillow → FFmpeg pipeline…")
+    model = _get_model()
+    short_model = model.split("/")[-2] if "/" in model else model
+    await think(run_id, stage,
+                f"🎬 Generating {len(scenes)} AI video clips via fal.ai ({short_model})…")
 
-    clip_paths = []
+    # ── Generate video clips for each scene ──
+    raw_paths: List[str] = []
     for i, scene in enumerate(scenes):
-        palette = SCENE_PALETTES[i % len(SCENE_PALETTES)]
-        clip_path = str(export_dir / f"_clip_{i:03d}.mp4")
-        await think(run_id, stage, f"Encoding scene {i+1}/{len(scenes)}: {scene['title']}", delay=0.3)
+        raw_path = str(export_dir / f"_raw_{i:03d}.mp4")
         try:
-            await _generate_scene_clip(
-                ffmpeg, clip_path, i, len(scenes),
-                scene["title"], scene["body"],
-                max(scene["duration"], 2),
-                palette,
+            success = await _generate_scene_video(
+                scene["body"], prompt_context, raw_path,
+                i, len(scenes), scene["duration"],
+                run_id, stage,
             )
-            clip_paths.append(clip_path)
-        except RuntimeError as e:
+            if success and os.path.exists(raw_path) and os.path.getsize(raw_path) > 1000:
+                await think(run_id, stage, f"✅ Scene {i+1} video generated")
+                raw_paths.append(raw_path)
+            else:
+                await think(run_id, stage, f"⚠️ Scene {i+1} — empty or missing video")
+        except Exception as e:
             await think(run_id, stage, f"⚠️ Scene {i+1} failed: {str(e)[:200]}")
 
-    if not clip_paths:
-        state["outputs"][stage] = {"rendered": False, "error": "All scene renders failed"}
+    if not raw_paths:
+        state["outputs"][stage] = {"rendered": False, "error": "All scene video generations failed"}
         state["current_stage"] = Stage.PACKAGE.value
         await record_step(run_id, stage, "failed", state["outputs"][stage])
         await checkpoint(state, stage)
         return state
 
-    await think(run_id, stage, "Concatenating clips into final video…", delay=0.5)
+    # ── Normalize clips to consistent format for concat ──
+    clip_paths: List[str] = []
+    for i, raw in enumerate(raw_paths):
+        norm_path = str(export_dir / f"_norm_{i:03d}.mp4")
+        await think(run_id, stage, f"🔄 Normalizing clip {i+1}/{len(raw_paths)}…")
+        try:
+            await _normalize_clip(ffmpeg, raw, norm_path)
+            clip_paths.append(norm_path)
+        except Exception as e:
+            await think(run_id, stage, f"⚠️ Normalize failed clip {i+1}: {str(e)[:150]}")
+            clip_paths.append(raw)  # fallback to raw
+
+    # Cleanup raw files
+    for p in raw_paths:
+        if p not in clip_paths:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+    # ── Concatenate ──
+    await think(run_id, stage, "🔗 Concatenating clips into final video…", delay=0.5)
     if len(clip_paths) == 1:
         os.rename(clip_paths[0], final_path)
     else:
@@ -339,7 +367,7 @@ async def render_node(state: dict) -> dict:
     total_dur = sum(s["duration"] for s in scenes)
     file_size = os.path.getsize(final_path) if os.path.exists(final_path) else 0
 
-    await think(run_id, stage, f"✅ Video rendered: {total_dur:.0f}s, {file_size/1024:.0f} KB")
+    await think(run_id, stage, f"✅ Video rendered: {len(scenes)} scenes, {file_size/1024/1024:.1f} MB")
 
     state["outputs"][stage] = {
         "rendered": True,
@@ -347,6 +375,7 @@ async def render_node(state: dict) -> dict:
         "duration_seconds": total_dur,
         "file_size_bytes": file_size,
         "scene_count": len(scenes),
+        "model": model,
     }
     state["current_stage"] = Stage.PACKAGE.value
 
