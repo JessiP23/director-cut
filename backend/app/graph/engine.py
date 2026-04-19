@@ -1,16 +1,19 @@
-"""LangGraph pipeline definition and execution engine."""
-from __future__ import annotations
+"""Sequential pipeline engine with approval gates and SSE streaming.
 
+Each stage is an async function (agent node) that receives state → returns
+state.  Approval gates pause the pipeline with an asyncio.Future that the
+approval route resolves.  No external orchestration library required — this
+is pure asyncio, which is the right tool for a linear pipeline.
+"""
+from __future__ import annotations
 
 import asyncio
 import json
+import traceback
 import uuid
-from typing import Any
+from typing import Dict, Optional
 
-from langgraph.graph import StateGraph, END
-
-from app.schemas.state import PipelineState
-from app.schemas.run import Stage, RunStatus, RunCreate, RunOut
+from app.schemas.run import Stage, RunStatus, RunCreate
 from app.db.repository import CheckpointRepository
 from app.db.connection import get_db
 from app.runtime.event_bus import event_bus
@@ -31,9 +34,7 @@ from app.agents.export import export_node
 
 log = get_logger("engine")
 
-# ---------------------------------------------------------------------------
-# Graph construction
-# ---------------------------------------------------------------------------
+# ── Stage config ────────────────────────────────────────────────────────────
 
 STAGE_ORDER = [
     Stage.INTAKE, Stage.PLANNING, Stage.RESEARCH, Stage.SCRIPT,
@@ -42,14 +43,6 @@ STAGE_ORDER = [
 ]
 
 APPROVAL_GATES = {Stage.SCRIPT, Stage.STORYBOARD, Stage.EDIT, Stage.QA}
-
-
-def _next_stage(stage: Stage) -> Stage:
-    idx = STAGE_ORDER.index(stage)
-    if idx + 1 < len(STAGE_ORDER):
-        return STAGE_ORDER[idx + 1]
-    return Stage.DONE
-
 
 NODE_MAP = {
     Stage.INTAKE: intake_node,
@@ -66,160 +59,221 @@ NODE_MAP = {
     Stage.EXPORT: export_node,
 }
 
+# ── In-memory bookkeeping ──────────────────────────────────────────────────
 
-def _should_pause(state: dict) -> str:
-    """Router: check if we need approval before advancing."""
-    stage = Stage(state["current_stage"])
-    if stage in APPROVAL_GATES and state.get("needs_approval"):
-        return "await_approval"
-    return "continue"
+_active_runs: Dict[str, asyncio.Task] = {}
+_approval_futures: Dict[str, asyncio.Future] = {}
 
-
-async def _await_approval_node(state: dict) -> dict:
-    state["status"] = RunStatus.AWAITING_APPROVAL
-    return state
+# ── Public API (called from routes) ────────────────────────────────────────
 
 
-def build_graph() -> StateGraph:
-    graph = StateGraph(dict)
-
-    # Add every stage node
-    for stage, fn in NODE_MAP.items():
-        graph.add_node(stage.value, fn)
-
-    graph.add_node("await_approval", _await_approval_node)
-
-    # Set entry
-    graph.set_entry_point(Stage.INTAKE.value)
-
-    # Linear edges with approval gate routing
-    for i, stage in enumerate(STAGE_ORDER):
-        if stage in APPROVAL_GATES:
-            graph.add_conditional_edges(
-                stage.value,
-                _should_pause,
-                {"await_approval": "await_approval", "continue": _next_stage(stage).value if _next_stage(stage) != Stage.DONE else END},
-            )
-            # After approval, go to next stage
-            nxt = _next_stage(stage)
-            graph.add_edge("await_approval", nxt.value if nxt != Stage.DONE else END)
-        else:
-            nxt = _next_stage(stage)
-            graph.add_edge(stage.value, nxt.value if nxt != Stage.DONE else END)
-
-    return graph
-
-
-_compiled = build_graph().compile()
-
-# ---------------------------------------------------------------------------
-# Active runs (in-memory handles)
-# ---------------------------------------------------------------------------
-
-_active_runs: dict[str, asyncio.Task] = {}
-
-
-async def start_run(body: RunCreate) -> RunOut:
-    run_id = uuid.uuid4().hex
-    db = await get_db()
-    await db.execute(
-        "INSERT INTO runs (id, project_id, prompt, status, current_stage, settings_json) VALUES (?,?,?,?,?,?)",
-        (run_id, body.project_id, body.prompt, "running", "intake", json.dumps(body.settings)),
-    )
-    await db.commit()
-    await db.close()
-
+async def start_run_async(run_id: str, body: RunCreate):
+    """Fire-and-forget: launch the pipeline as a background task."""
     initial_state = {
         "run_id": run_id,
         "project_id": body.project_id,
         "prompt": body.prompt,
         "status": RunStatus.RUNNING,
-        "current_stage": Stage.INTAKE,
+        "current_stage": Stage.INTAKE.value,
         "outputs": {},
         "artifact_ids": [],
         "approvals": {},
         "errors": [],
-        "settings": body.settings,
+        "settings": body.settings or {},
         "cancelled": False,
         "needs_approval": None,
     }
-
     task = asyncio.create_task(_execute(run_id, initial_state))
     _active_runs[run_id] = task
 
-    return RunOut(id=run_id, project_id=body.project_id, prompt=body.prompt, status=RunStatus.RUNNING)
+
+async def submit_approval(run_id: str, stage: str, decision: str, notes: str = ""):
+    """Called by the approval route to unblock a paused pipeline."""
+    # Persist the decision
+    db = await get_db()
+    await db.execute(
+        "INSERT INTO approvals (id, run_id, stage, decision, notes) VALUES (?,?,?,?,?)",
+        (uuid.uuid4().hex, run_id, stage, decision, notes),
+    )
+    await db.commit()
+    await db.close()
+
+    # Resolve the future the pipeline is awaiting
+    fut = _approval_futures.pop(run_id, None)
+    if fut and not fut.done():
+        fut.set_result({"stage": stage, "decision": decision, "notes": notes})
+
+
+async def cancel_run(run_id: str):
+    task = _active_runs.pop(run_id, None)
+    if task:
+        task.cancel()
+    db = await get_db()
+    await db.execute(
+        "UPDATE runs SET status='cancelled', updated_at=datetime('now') WHERE id=?",
+        (run_id,),
+    )
+    await db.commit()
+    await db.close()
+
+# ── Pipeline driver ────────────────────────────────────────────────────────
 
 
 async def _execute(run_id: str, state: dict):
+    """Walk every stage in order, pausing at approval gates."""
     try:
-        result = await _compiled.ainvoke(state)
-        await _finish_run(run_id, result)
+        for stage in STAGE_ORDER:
+            if state.get("cancelled"):
+                break
+
+            stage_name = stage.value
+            node_fn = NODE_MAP[stage]
+
+            # ── Update DB to current stage ──
+            db = await get_db()
+            await db.execute(
+                "UPDATE runs SET current_stage=?, status='running', "
+                "updated_at=datetime('now') WHERE id=?",
+                (stage_name, run_id),
+            )
+            await db.commit()
+            await db.close()
+
+            # ── Emit "stage started" to SSE ──
+            await event_bus.emit(run_id, "stage_start", {
+                "stage": stage_name,
+                "message": f"Starting {stage_name}…",
+            })
+
+            # ── Run the agent node (with timeout) ──
+            try:
+                state = await asyncio.wait_for(node_fn(state), timeout=300)
+            except asyncio.TimeoutError:
+                raise RuntimeError(f"Stage {stage_name} timed out (300 s)")
+
+            # ── Emit "stage complete" to SSE ──
+            await event_bus.emit(run_id, "stage_complete", {
+                "stage": stage_name,
+                "message": f"{stage_name} complete ✓",
+            })
+
+            # ── Approval gate ──
+            if stage in APPROVAL_GATES:
+                await _wait_for_approval(run_id, stage_name, state)
+                if state.get("cancelled"):
+                    break
+
+        # All stages done (or cancelled)
+        if state.get("cancelled"):
+            await _cancel_run_db(run_id)
+        else:
+            await _finish_run(run_id, state)
+
+    except asyncio.CancelledError:
+        log.info("run_cancelled", run_id=run_id)
     except Exception as exc:
         log.error("run_failed", run_id=run_id, error=str(exc))
+        traceback.print_exc()
         await _fail_run(run_id, str(exc))
+    finally:
+        _active_runs.pop(run_id, None)
+        _approval_futures.pop(run_id, None)
+
+
+async def _wait_for_approval(run_id: str, stage_name: str, state: dict):
+    """Pause pipeline, emit SSE event, wait for approval future."""
+    await event_bus.emit(run_id, "stage_progress", {
+        "stage": stage_name,
+        "message": f"{stage_name} – awaiting approval",
+    })
+
+    db = await get_db()
+    await db.execute(
+        "UPDATE runs SET status='awaiting_approval', "
+        "updated_at=datetime('now') WHERE id=?",
+        (run_id,),
+    )
+    await db.commit()
+    await db.close()
+
+    # Create a future the approval route will resolve
+    loop = asyncio.get_event_loop()
+    fut = loop.create_future()
+    _approval_futures[run_id] = fut
+
+    try:
+        result = await asyncio.wait_for(fut, timeout=300)
+        state["approvals"][stage_name] = result
+        if result.get("decision") == "reject":
+            state["cancelled"] = True
+            return
+    except asyncio.TimeoutError:
+        # Auto-approve so the pipeline keeps moving during development
+        log.warning("auto_approve_timeout", run_id=run_id, stage=stage_name)
+        state["approvals"][stage_name] = {
+            "decision": "approve",
+            "notes": "auto-approved (5 min timeout)",
+        }
+
+    # Back to running
+    db = await get_db()
+    await db.execute(
+        "UPDATE runs SET status='running', updated_at=datetime('now') WHERE id=?",
+        (run_id,),
+    )
+    await db.commit()
+    await db.close()
+
+
+# ── Terminal helpers ───────────────────────────────────────────────────────
 
 
 async def _finish_run(run_id: str, state: dict):
     db = await get_db()
-    await db.execute("UPDATE runs SET status='completed', current_stage='done', updated_at=datetime('now') WHERE id=?", (run_id,))
+    await db.execute(
+        "UPDATE runs SET status='completed', current_stage='done', "
+        "updated_at=datetime('now') WHERE id=?",
+        (run_id,),
+    )
     await db.commit()
     await db.close()
-    await event_bus.emit(run_id, "run_completed", {"run_id": run_id})
+    await event_bus.emit(run_id, "run_completed", {
+        "run_id": run_id,
+        "message": "🎬 Production complete!",
+    })
     await event_bus.close(run_id)
 
 
 async def _fail_run(run_id: str, error: str):
     db = await get_db()
-    await db.execute("UPDATE runs SET status='failed', updated_at=datetime('now') WHERE id=?", (run_id,))
-    await db.execute("INSERT INTO errors (id, run_id, message, recoverable) VALUES (?,?,?,1)",
-                     (uuid.uuid4().hex, run_id, error))
+    await db.execute(
+        "UPDATE runs SET status='failed', updated_at=datetime('now') WHERE id=?",
+        (run_id,),
+    )
+    await db.execute(
+        "INSERT INTO errors (id, run_id, message, recoverable) VALUES (?,?,?,1)",
+        (uuid.uuid4().hex, run_id, error),
+    )
     await db.commit()
     await db.close()
-    await event_bus.emit(run_id, "run_failed", {"run_id": run_id, "error": error})
+    await event_bus.emit(run_id, "run_failed", {
+        "run_id": run_id,
+        "error": error,
+        "message": f"Run failed: {error}",
+    })
     await event_bus.close(run_id)
 
 
-async def get_run_status(run_id: str) -> RunOut | None:
-    db = await get_db()
-    cursor = await db.execute("SELECT * FROM runs WHERE id=?", (run_id,))
-    row = await cursor.fetchone()
-    await db.close()
-    if not row:
-        return None
-    return RunOut(
-        id=row["id"], project_id=row["project_id"], prompt=row["prompt"],
-        status=row["status"], current_stage=row["current_stage"],
-    )
-
-
-async def cancel_run(run_id: str):
-    task = _active_runs.get(run_id)
-    if task:
-        task.cancel()
-    db = await get_db()
-    await db.execute("UPDATE runs SET status='cancelled', updated_at=datetime('now') WHERE id=?", (run_id,))
-    await db.commit()
-    await db.close()
-
-
-async def resume_run(run_id: str):
-    repo = CheckpointRepository()
-    state = await repo.latest(run_id)
-    if not state:
-        raise ValueError(f"No checkpoint found for run {run_id}")
-    task = asyncio.create_task(_execute(run_id, state))
-    _active_runs[run_id] = task
-
-
-async def submit_approval(run_id: str, action):
-    """Unblock a paused run after user approves/rejects."""
+async def _cancel_run_db(run_id: str):
     db = await get_db()
     await db.execute(
-        "INSERT INTO approvals (id, run_id, stage, decision, notes) VALUES (?,?,?,?,?)",
-        (uuid.uuid4().hex, run_id, action.stage, action.decision, action.notes),
+        "UPDATE runs SET status='cancelled', updated_at=datetime('now') WHERE id=?",
+        (run_id,),
     )
     await db.commit()
     await db.close()
-    # In a real implementation, this would signal the paused graph node.
-    # For now, we resume the run with the approval recorded.
-    await resume_run(run_id)
+    await event_bus.emit(run_id, "run_cancelled", {
+        "run_id": run_id,
+        "message": "Run cancelled.",
+    })
+    await event_bus.close(run_id)

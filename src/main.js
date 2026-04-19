@@ -158,15 +158,44 @@ function streamLogs(runId) {
   eventSource = new EventSource(`http://127.0.0.1:9420/api/events/stream/${runId}`);
   eventSource.onmessage = (e) => {
     const data = JSON.parse(e.data);
-    logEl.textContent += `[${data.type}] ${data.message || JSON.stringify(data)}\n`;
-    logEl.scrollTop = logEl.scrollHeight;
-    if (data.stage) {
-      const el = document.querySelector(`[data-stage="${data.stage}"]`);
-      if (el) el.classList.add("completed");
+    const ts = new Date().toLocaleTimeString();
+
+    // Display in log panel
+    if (data.type === "stage_thinking") {
+      logEl.textContent += `  ${data.message}\n`;
+    } else {
+      logEl.textContent += `${ts} [${data.type}] ${data.message || JSON.stringify(data)}\n`;
     }
+    logEl.scrollTop = logEl.scrollHeight;
+
+    // Update pipeline stage indicators
+    if (data.type === "stage_start" && data.stage) {
+      const el = document.querySelector(`[data-stage="${data.stage}"]`);
+      if (el) { el.classList.remove("completed"); el.classList.add("active"); }
+    }
+    if (data.type === "stage_complete" && data.stage) {
+      const el = document.querySelector(`[data-stage="${data.stage}"]`);
+      if (el) { el.classList.remove("active"); el.classList.add("completed"); }
+    }
+
+    // Approval gate
     if (data.type === "stage_progress" && data.message?.includes("awaiting approval")) {
       showApprovalModal(runId, data.stage);
     }
+
+    // Terminal events
+    if (data.type === "run_completed") {
+      toast("🎬 Production complete!", "success");
+      eventSource.close();
+    }
+    if (data.type === "run_failed") {
+      toast("Run failed: " + (data.error || "unknown"), "error");
+      eventSource.close();
+    }
+  };
+  eventSource.onerror = () => {
+    logEl.textContent += "[connection closed]\n";
+    eventSource.close();
   };
 }
 

@@ -1,7 +1,7 @@
 """Run management routes."""
 from __future__ import annotations
 
-
+import asyncio
 import json
 import uuid
 from datetime import datetime
@@ -24,16 +24,14 @@ async def create_run(body: RunCreate):
     await db.commit()
     await db.close()
 
-    # Try to start the graph pipeline (non-blocking)
+    # Start the pipeline (non-blocking background task)
     try:
         from app.graph.engine import start_run_async
-        import asyncio
         asyncio.create_task(start_run_async(run_id, body))
-    except ImportError:
-        # LangGraph not installed – run stays in DB as "running", user can still see it
-        pass
     except Exception as e:
-        print(f"⚠️ Graph engine error: {e}")
+        import traceback
+        traceback.print_exc()
+        print(f"⚠️ Pipeline engine failed to start: {e}")
 
     return RunOut(
         id=run_id, project_id=body.project_id, prompt=body.prompt,
