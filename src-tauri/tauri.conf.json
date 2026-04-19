@@ -10,11 +10,19 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "director-cut",
-        "width": 800,
-        "height": 600
+        "title": "Director's Cut",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "decorations": true,
+        "resizable": true
       }
     ],
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true
+    },
     "security": {
       "csp": null
     }
