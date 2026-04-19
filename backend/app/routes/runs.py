@@ -83,3 +83,25 @@ async def cancel(run_id: str):
 @router.post("/{run_id}/resume")
 async def resume(run_id: str):
     return {"ok": True, "message": "Resume not yet implemented"}
+
+
+@router.get("/{run_id}/outputs")
+async def get_run_outputs(run_id: str):
+    """Return the checkpoint state (all stage outputs) for a run."""
+    from app.db.connection import get_db
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT state_json FROM checkpoints WHERE run_id=? ORDER BY created_at DESC LIMIT 1",
+        (run_id,),
+    )
+    row = await cursor.fetchone()
+    await db.close()
+    if not row:
+        raise HTTPException(404, "No outputs found for this run")
+    import json
+    state = json.loads(row["state_json"])
+    return {
+        "run_id": run_id,
+        "outputs": state.get("outputs", {}),
+        "artifact_ids": state.get("artifact_ids", []),
+    }

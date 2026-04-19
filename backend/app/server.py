@@ -1,5 +1,17 @@
 """FastAPI server – the HTTP surface that Tauri talks to."""
 
+import os
+from pathlib import Path
+
+# Load .env before anything else reads env vars
+_env_path = Path(__file__).resolve().parent.parent / ".env"
+if _env_path.exists():
+    for line in _env_path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, val = line.partition("=")
+            os.environ.setdefault(key.strip(), val.strip())
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 

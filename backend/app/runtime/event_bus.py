@@ -16,7 +16,11 @@ class EventBus:
         return q
 
     def unsubscribe(self, run_id: str, q: asyncio.Queue):
-        self._subscribers[run_id].remove(q)
+        subs = self._subscribers.get(run_id, [])
+        try:
+            subs.remove(q)
+        except ValueError:
+            pass  # already removed by close()
 
     async def emit(self, run_id: str, event_type: str, data: dict):
         payload = json.dumps({"type": event_type, **data})

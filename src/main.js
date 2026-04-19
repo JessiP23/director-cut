@@ -187,6 +187,7 @@ function streamLogs(runId) {
     if (data.type === "run_completed") {
       toast("🎬 Production complete!", "success");
       eventSource.close();
+      loadRunResults(runId);
     }
     if (data.type === "run_failed") {
       toast("Run failed: " + (data.error || "unknown"), "error");
@@ -197,6 +198,86 @@ function streamLogs(runId) {
     logEl.textContent += "[connection closed]\n";
     eventSource.close();
   };
+}
+
+// --- Run Results ---
+async function loadRunResults(runId) {
+  try {
+    const data = await api("GET", `/api/runs/${runId}/outputs`);
+    const panel = document.getElementById("results-panel");
+    const content = document.getElementById("results-content");
+    panel.style.display = "block";
+
+    const stageLabels = {
+      intake: "📋 Intake",
+      planning: "🗂️ Production Plan",
+      research: "🔍 Research",
+      script: "📝 Script",
+      storyboard: "🎨 Storyboard",
+      assets: "🖼️ Assets",
+      audio: "🔊 Audio",
+      edit_assembly: "✂️ Edit Assembly",
+      qa: "✅ QA Report",
+      render: "🎥 Render",
+      package: "📦 Package",
+      export: "🚀 Export",
+    };
+
+    let html = "";
+    for (const [stage, output] of Object.entries(data.outputs || {})) {
+      const label = stageLabels[stage] || stage;
+      const isSimulated = output.simulated;
+      html += `<details class="result-stage" ${stage === "planning" || stage === "script" ? "open" : ""}>`;
+      html += `<summary style="cursor:pointer;font-weight:600;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.1);">${label}${isSimulated ? ' <span style="opacity:0.5;font-size:12px;">(simulated)</span>' : ""}</summary>`;
+      html += `<div style="padding:12px 0;">`;
+
+      if (output.title) html += `<p><strong>Title:</strong> ${output.title}</p>`;
+      if (output.tone) html += `<p><strong>Tone:</strong> ${output.tone} · <strong>Style:</strong> ${output.style || "—"}</p>`;
+      if (output.target_length_seconds) html += `<p><strong>Duration:</strong> ${output.target_length_seconds}s</p>`;
+
+      if (output.scenes) {
+        html += `<h4 style="margin-top:8px;">Scenes (${output.scenes.length})</h4><ul>`;
+        for (const s of output.scenes) {
+          html += `<li><strong>${s.id || ""}.</strong> ${s.description || s.text || JSON.stringify(s)} <em>(${s.duration || s.duration_seconds || "?"}s)</em></li>`;
+        }
+        html += `</ul>`;
+      }
+
+      if (output.script_lines) {
+        html += `<h4 style="margin-top:8px;">Script Lines</h4><ul>`;
+        for (const l of output.script_lines) {
+          html += `<li>"${l.text}" <em>(${l.duration || l.duration_seconds || "?"}s)</em></li>`;
+        }
+        html += `</ul>`;
+      }
+
+      if (output.shots) {
+        html += `<h4 style="margin-top:8px;">Shots (${output.shots.length})</h4><ul>`;
+        for (const s of output.shots) {
+          html += `<li><strong>${s.camera_angle || ""}:</strong> ${s.description || JSON.stringify(s)}</li>`;
+        }
+        html += `</ul>`;
+      }
+
+      if (output.facts) {
+        html += `<h4>Facts</h4><ul>${output.facts.map(f => `<li>${typeof f === "string" ? f : JSON.stringify(f)}</li>`).join("")}</ul>`;
+      }
+
+      if (output.notes) html += `<p style="opacity:0.7;font-style:italic;margin-top:8px;">${output.notes}</p>`;
+
+      // Fallback: show raw JSON for stages without special rendering
+      if (!output.title && !output.scenes && !output.script_lines && !output.shots && !output.facts) {
+        html += `<pre style="font-size:12px;opacity:0.8;white-space:pre-wrap;">${JSON.stringify(output, null, 2)}</pre>`;
+      }
+
+      html += `</div></details>`;
+    }
+
+    if (!html) html = "<p>No outputs recorded.</p>";
+    content.innerHTML = html;
+  } catch (e) {
+    console.error("Failed to load results:", e);
+  }
 }
 
 // --- Approvals ---
@@ -218,6 +299,7 @@ async function submitApproval(runId, stage, decision) {
 async function loadSettings() {
   try {
     const s = await api("GET", "/api/settings");
+    if (s.groq_api_key) document.getElementById("setting-groq-key").value = s.groq_api_key;
     if (s.openrouter_api_key) document.getElementById("setting-api-key").value = s.openrouter_api_key;
     if (s.model) document.getElementById("setting-model").value = s.model;
     if (s.ffmpeg_path) document.getElementById("setting-ffmpeg").value = s.ffmpeg_path;
@@ -227,10 +309,12 @@ async function loadSettings() {
 async function saveSettings(e) {
   e.preventDefault();
   await api("PUT", "/api/settings", {
+    groq_api_key: document.getElementById("setting-groq-key").value,
     openrouter_api_key: document.getElementById("setting-api-key").value,
     model: document.getElementById("setting-model").value,
     ffmpeg_path: document.getElementById("setting-ffmpeg").value,
   });
+  toast("Settings saved!", "success");
 }
 
 // --- Init ---

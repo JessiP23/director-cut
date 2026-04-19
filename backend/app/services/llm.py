@@ -8,7 +8,41 @@ from app.runtime.logger import get_logger
 
 log = get_logger("llm")
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# ── Provider configs ────────────────────────────────────────────────────────
+PROVIDERS = {
+    "groq": {
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "env_key": "GROQ_API_KEY",
+        "default_model": "llama-3.3-70b-versatile",
+    },
+    "openrouter": {
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "env_key": "OPENROUTER_API_KEY",
+        "default_model": "openai/gpt-4o-mini",
+    },
+}
+
+
+def _resolve_provider(settings: dict) -> tuple:
+    """Pick the first provider that has an API key configured."""
+    # Check Groq first (free tier)
+    groq_key = (settings.get("groq_api_key") or os.getenv("GROQ_API_KEY") or "").strip()
+    if groq_key:
+        p = PROVIDERS["groq"]
+        model = settings.get("model") or os.getenv("DIRECTOR_MODEL") or p["default_model"]
+        # Groq only supports its own models — remap if user has an openai/ model set
+        if "/" in model:
+            model = p["default_model"]
+        return p["url"], groq_key, model
+
+    # Then OpenRouter
+    or_key = (settings.get("openrouter_api_key") or os.getenv("OPENROUTER_API_KEY") or "").strip()
+    if or_key:
+        p = PROVIDERS["openrouter"]
+        model = settings.get("model") or os.getenv("DIRECTOR_MODEL") or p["default_model"]
+        return p["url"], or_key, model
+
+    return None, None, None
 
 
 async def call_llm(
@@ -20,34 +54,40 @@ async def call_llm(
     max_tokens: int = 4096,
 ) -> dict:
     settings = settings or {}
-    model = model or settings.get("model", os.getenv("DIRECTOR_MODEL", "openai/gpt-4o-mini"))
-    api_key = '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'
+    url, api_key, resolved_model = _resolve_provider(settings)
+    if model:
+        resolved_model = model
 
-    # ── No key → return a realistic placeholder so the pipeline keeps going ──
     if not api_key:
-        log.warning("no_api_key", message="No OpenRouter API key – returning simulated response")
+        log.warning("no_api_key", message="No LLM API key configured – returning simulated response")
         return _simulated_response(system, user)
 
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://director-cut.local",
     }
+    # OpenRouter wants a referer header
+    if "openrouter" in url:
+        headers["HTTP-Referer"] = "https://director-cut.local"
 
     payload = {
-        "model": model,
+        "model": resolved_model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
         "temperature": temperature,
         "max_tokens": max_tokens,
-        "response_format": {"type": "json_object"},
     }
+    # Groq supports json mode on compatible models
+    if "groq" in url or "openrouter" in url:
+        payload["response_format"] = {"type": "json_object"}
+
+    log.info("llm_call", provider=url.split("/")[2], model=resolved_model)
 
     try:
         async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(OPENROUTER_URL, json=payload, headers=headers)
+            resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
 
