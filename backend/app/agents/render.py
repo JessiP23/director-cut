@@ -149,8 +149,12 @@ async def _generate_scene_video(
         f"Photorealistic, dramatic lighting, smooth camera movement, high production value."
     )
 
-    # fal.ai duration is "5" or "10"
-    fal_duration = "10" if duration > 7 else "5"
+    # fal.ai duration depends on model — minimax uses "6" or "10", kling uses "5" or "10"
+    model_lower = model.lower()
+    if "minimax" in model_lower or "hailuo" in model_lower:
+        fal_duration = "10" if duration > 7 else "6"
+    else:
+        fal_duration = "10" if duration > 7 else "5"
 
     async with httpx.AsyncClient() as client:
         scene_label = f"Scene {scene_idx + 1}/{total_scenes}"

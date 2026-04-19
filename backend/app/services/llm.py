@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import asyncio
+import re
 from typing import Optional
 import httpx
 from app.runtime.logger import get_logger
@@ -89,10 +91,27 @@ async def call_llm(
     try:
         timeout_cfg = httpx.Timeout(60.0, connect=10.0)
         async with httpx.AsyncClient(timeout=timeout_cfg) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            print(f"[LLM] Response status: {resp.status_code}", flush=True)
-            resp.raise_for_status()
-            data = resp.json()
+            # Retry loop for rate limits (429)
+            max_retries = 4
+            for attempt in range(max_retries):
+                resp = await client.post(url, json=payload, headers=headers)
+                print(f"[LLM] Response status: {resp.status_code}", flush=True)
+                if resp.status_code == 429 and attempt < max_retries - 1:
+                    # Parse retry-after hint from error message
+                    wait = 3.0
+                    try:
+                        m = re.search(r"try again in (\d+\.?\d*)", resp.text)
+                        if m:
+                            wait = max(float(m.group(1)) + 0.5, 1.0)
+                    except Exception:
+                        pass
+                    wait = min(wait, 15.0)
+                    print(f"[LLM] Rate limited, retrying in {wait:.1f}s (attempt {attempt+1}/{max_retries})…", flush=True)
+                    await asyncio.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                break
 
         content = data["choices"][0]["message"]["content"]
         print(f"[LLM] Got {len(content)} chars", flush=True)
