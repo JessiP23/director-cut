@@ -411,19 +411,39 @@ async function loadRuns(projectId = null) {
     const active = runs.filter((r) => r.status === "running" || r.status === "awaiting_approval").length;
     document.getElementById("stat-runs").textContent = active;
 
+    // Update sidebar active-runs badge
+    const navBadge = document.getElementById("active-runs-badge");
+    if (navBadge) {
+      if (active > 0) {
+        navBadge.textContent = active;
+        navBadge.style.display = "inline-flex";
+      } else {
+        navBadge.style.display = "none";
+      }
+    }
+
     const list = document.getElementById("run-list");
     if (!filtered.length) {
-      list.innerHTML = '<p class="item-meta" style="padding:20px;text-align:center;">No productions yet for this scope.</p>';
+      list.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">🎬</div>
+          <p class="empty-title">No productions yet</p>
+          <p class="empty-sub">Go to Command Center and type a prompt to kick off your first AI video.</p>
+        </div>`;
       return;
     }
 
+    const statusIcon = { running: "🟢", awaiting_approval: "🟡", completed: "✅", failed: "🔴" };
     list.innerHTML = filtered.map((r) => `
       <div class="item run-item" data-id="${r.id}">
-        <div>
-          <span class="item-name">${(r.prompt || "Untitled").slice(0, 80)}</span><br>
-          <span class="item-meta">Status: ${r.status} · Stage: ${r.current_stage}</span>
+        <div class="run-item-main">
+          <span class="item-name">${(r.prompt || "Untitled").slice(0, 80)}</span>
+          <span class="run-status run-status--${r.status}">${statusIcon[r.status] || "⚪"} ${r.status.replace(/_/g, " ")}</span>
         </div>
-        <span class="item-meta">${new Date(r.created_at).toLocaleString()}</span>
+        <div class="run-item-meta">
+          <span class="item-meta">Stage: ${r.current_stage || "—"}</span>
+          <span class="item-meta">${new Date(r.created_at).toLocaleString()}</span>
+        </div>
       </div>
     `).join("");
 
@@ -449,7 +469,7 @@ function showPipeline(run) {
   document.getElementById("run-list").style.display = "none";
   document.getElementById("pipeline-view").style.display = "block";
   document.getElementById("output-view").style.display = "none";
-  document.getElementById("pipeline-run-id").textContent = run.id.slice(0, 8);
+  document.getElementById("pipeline-run-id").textContent = `Run ${run.id.slice(0, 8)}`;
   resetAgentTakeTimeline();
   setTakeExecutionActive(run.status === "running" || run.status === "awaiting_approval");
   // Hide video + results panels
@@ -872,6 +892,57 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   document.getElementById("quick-max-scenes").addEventListener("input", (e) => {
     document.getElementById("quick-max-scenes-value").textContent = e.target.value;
+    updateCostHint();
+  });
+
+  function updateCostHint() {
+    const scenes = parseInt(document.getElementById("quick-max-scenes").value || "4", 10);
+    // Cost per clip by model (rough estimates)
+    const modelCosts = {
+      "fal-ai/wan/v2.2-a14b/text-to-video": 0.04,
+      "fal-ai/ltx-video/v0.9.1/text-to-video": 0.01,
+      "fal-ai/minimax/hailuo-02/standard/text-to-video": 0.45,
+      "fal-ai/kling-video/v2.5-turbo/pro/text-to-video": 0.32,
+    };
+    const modelEl = document.getElementById("setting-video-model");
+    const model = modelEl?.value || "fal-ai/wan/v2.2-a14b/text-to-video";
+    const costPer = modelCosts[model] ?? 0.04;
+    const total = (scenes * costPer).toFixed(2);
+    const modelLabel = modelEl?.options[modelEl.selectedIndex]?.text?.split("—")[0]?.trim() || "Wan 2.2";
+    const hint = document.getElementById("cost-hint");
+    if (hint) hint.textContent = `~$${total} estimated · ${scenes} scene${scenes !== 1 ? "s" : ""} · ${modelLabel}`;
+  }
+  updateCostHint();
+
+  // Back button in pipeline view
+  document.getElementById("btn-back-to-runs")?.addEventListener("click", () => {
+    if (eventSource) { eventSource.close(); eventSource = null; }
+    setTakeExecutionActive(false);
+    document.getElementById("pipeline-view").style.display = "none";
+    document.getElementById("output-view").style.display = "none";
+    document.getElementById("run-list").style.display = "";
+    loadRuns(selectedProjectId);
+  });
+
+  // Pause / interrupt button — calls backend cancel endpoint
+  document.getElementById("interrupt-btn")?.addEventListener("click", async () => {
+    if (!currentRunId) return;
+    const btn = document.getElementById("interrupt-btn");
+    btn.disabled = true;
+    btn.textContent = "Pausing…";
+    try {
+      await api("POST", `/api/runs/${currentRunId}/cancel`);
+      if (eventSource) { eventSource.close(); eventSource = null; }
+      setTakeExecutionActive(false);
+      toast("Run paused / cancelled.", "info");
+      appendAgentTakeScene({ type: "run_cancelled", stage: "interrupt", message: "Run cancelled by user." });
+      loadRuns(selectedProjectId);
+    } catch (e) {
+      toast("Failed to pause run: " + e, "error");
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = "⏸ Pause Run";
+    }
   });
   // When project selector changes to _new, trigger create
   document.getElementById("quick-project").addEventListener("change", async (e) => {

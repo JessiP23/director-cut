@@ -1130,11 +1130,7 @@ input:focus, textarea:focus, select:focus {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  position: fixed;
-  bottom: 24px;
-  right: 24px;
-  z-index: 500;
-  padding: 9px 20px;
+  padding: 8px 18px;
   border-radius: 999px;
   background: transparent;
   border: 1.5px solid var(--red);
@@ -1143,9 +1139,204 @@ input:focus, textarea:focus, select:focus {
   font-weight: 600;
   cursor: pointer;
   transition: background 60ms ease, box-shadow 60ms ease;
+  flex-shrink: 0;
 }
 
 .interrupt-btn:hover {
   background: var(--red-glow);
   box-shadow: 0 0 12px var(--red-glow);
+}
+
+/* ============================================================
+   UI/UX IMPROVEMENTS v0.2
+   ============================================================ */
+
+/* Sidebar logo */
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 20px 16px 16px;
+}
+
+.sidebar-logo {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  object-fit: cover;
+}
+
+.brand-text h2 {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-1);
+  line-height: 1.2;
+}
+
+.brand-text .brand-tag {
+  font-size: 10px;
+  color: var(--text-3);
+  letter-spacing: 0.04em;
+}
+
+/* Active runs badge in nav */
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--green);
+  color: #000;
+  font-size: 10px;
+  font-weight: 700;
+  margin-left: 6px;
+  animation: badgePop 0.2s ease;
+}
+
+@keyframes badgePop {
+  0%   { transform: scale(0.6); opacity: 0; }
+  100% { transform: scale(1);   opacity: 1; }
+}
+
+/* Pipeline breadcrumb / back button */
+.pipeline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0 14px;
+  gap: 12px;
+}
+
+.pipeline-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-back {
+  background: none;
+  border: none;
+  color: var(--text-3);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 0;
+  transition: color 60ms ease;
+}
+
+.btn-back:hover { color: var(--text-1); }
+
+.breadcrumb-sep {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.pipeline-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pipeline-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin: 0;
+}
+
+/* Run list items */
+.run-item-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.run-item-meta {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.run-status {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.run-status--running          { background: rgba(34,197,94,0.12);  color: var(--green); }
+.run-status--awaiting_approval{ background: rgba(234,179,8,0.12);  color: var(--amber); }
+.run-status--completed        { background: rgba(250,250,250,0.08); color: var(--text-2); }
+.run-status--failed           { background: rgba(239,68,68,0.12);  color: var(--red); }
+
+/* Empty state */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 48px 20px;
+  text-align: center;
+  gap: 8px;
+}
+
+.empty-icon {
+  font-size: 36px;
+  margin-bottom: 4px;
+}
+
+.empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin: 0;
+}
+
+.empty-sub {
+  font-size: 13px;
+  color: var(--text-3);
+  max-width: 320px;
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* Hero card header row */
+.hero-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.hero-hint {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+/* Scene count badge */
+.badge-scenes {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--bg-3);
+  color: var(--text-1);
+  font-size: 11px;
+  font-weight: 700;
+  margin-left: 4px;
+}
+
+/* Cost hint */
+.form-cost-hint {
+  font-size: 11px;
+  color: var(--text-3);
+  margin: 6px 0 0;
+  padding: 0 2px;
 }
