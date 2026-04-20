@@ -6,6 +6,9 @@ on:
       - "v*.*.*"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-macos:
     name: macOS Apple Silicon
@@ -20,7 +23,6 @@ jobs:
         with:
           targets: aarch64-apple-darwin
 
-      # Cache ~/.cargo/registry + src-tauri/target — biggest time saver
       - name: Rust + Cargo cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -34,7 +36,6 @@ jobs:
           VERSION=$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      # tauri-action has cargo-tauri pre-installed — no separate install step
       - name: Build & create draft release
         uses: tauri-apps/tauri-action@v0
         env:
