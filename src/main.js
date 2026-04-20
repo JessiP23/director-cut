@@ -747,9 +747,17 @@ window.addEventListener("DOMContentLoaded", () => {
       if (page === "settings") loadSettings();
     });
   });
+  const produceBtn = document.querySelector("#quick-start-form .btn-glow");
+  const quickPrompt = document.getElementById("quick-prompt");
+  if (produceBtn && quickPrompt) {
+    produceBtn.disabled = !quickPrompt.value.trim();
+    quickPrompt.addEventListener("input", () => {
+      produceBtn.disabled = !quickPrompt.value.trim();
+    });
+  }
   document.getElementById("quick-start-form").addEventListener("submit", (e) => {
     e.preventDefault();
-    const p = document.getElementById("quick-prompt").value.trim();
+    const p = quickPrompt.value.trim();
     if (p) startQuickRun(p);
   });
   document.getElementById("quick-max-scenes").addEventListener("input", (e) => {
