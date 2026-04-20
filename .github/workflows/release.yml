@@ -3,8 +3,8 @@ name: Build & Draft Release
 on:
   push:
     tags:
-      - "v*.*.*"           # triggers on v0.2.0, v0.3.0, etc.
-  workflow_dispatch:        # also allows manual trigger from GitHub UI
+      - "v*.*.*"
+  workflow_dispatch:
 
 jobs:
   build-macos:
@@ -12,87 +12,42 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      # ── Checkout ────────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Rust ────────────────────────────────────────────────
-      - name: Install Rust (stable)
+      - name: Install Rust (stable, aarch64)
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
 
-      - name: Rust cache
+      # Cache ~/.cargo/registry + src-tauri/target — biggest time saver
+      - name: Rust + Cargo cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: "src-tauri -> target"
           cache-on-failure: true
+          key: aarch64-apple-darwin
 
-      # ── Python (needed by Tauri bundler for backend) ────────
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      # ── System deps ─────────────────────────────────────────
-      - name: Install FFmpeg
-        run: brew install ffmpeg
-
-      # ── Tauri CLI ───────────────────────────────────────────
-      - name: Install cargo-tauri
-        run: cargo install tauri-cli --version "^2" --locked
-
-      # ── Read version from tauri.conf.json ───────────────────
       - name: Read version
         id: version
         run: |
-          VERSION=$(python3 -c "import json; d=json.load(open('src-tauri/tauri.conf.json')); print(d['version'])")
+          VERSION=$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Building version $VERSION"
 
-      # ── Build ───────────────────────────────────────────────
-      - name: Build Tauri app (Apple Silicon)
-        run: cargo tauri build --target aarch64-apple-darwin
+      # tauri-action has cargo-tauri pre-installed — no separate install step
+      - name: Build & create draft release
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # ── Locate the .dmg ─────────────────────────────────────
-      - name: Find DMG
-        id: dmg
-        run: |
-          DMG=$(find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -name "*.dmg" | head -1)
-          echo "path=$DMG" >> $GITHUB_OUTPUT
-          echo "Found: $DMG"
-
-      # ── Compute SHA-256 ─────────────────────────────────────
-      - name: SHA-256 checksum
-        id: sha
-        run: |
-          HASH=$(shasum -a 256 "${{ steps.dmg.outputs.path }}" | awk '{print $1}')
-          echo "hash=$HASH" >> $GITHUB_OUTPUT
-          echo "SHA256: $HASH"
-
-      # ── Rename DMG to match release naming convention ───────
-      - name: Rename DMG
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          cp "${{ steps.dmg.outputs.path }}" "director-cut_${VERSION}_aarch64.dmg"
-
-      # ── Create draft GitHub Release ─────────────────────────
-      - name: Create draft release
-        uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: "Director's Cut v${{ steps.version.outputs.version }} — AI Video Production Studio"
-          draft: true
-          prerelease: false
-          body: |
+          tagName: v${{ steps.version.outputs.version }}
+          releaseName: "Director's Cut v${{ steps.version.outputs.version }} — AI Video Production Studio"
+          releaseBody: |
             ## Download & Install (macOS Apple Silicon)
 
             1. Download `director-cut_${{ steps.version.outputs.version }}_aarch64.dmg` below
-            2. Open the `.dmg` file
-            3. Drag **Director's Cut** into your Applications folder
-            4. Open it from Applications (right-click → Open on first launch to bypass Gatekeeper)
+            2. Open the `.dmg` → drag **Director's Cut** into Applications
+            3. Right-click → Open on first launch (bypasses Gatekeeper)
 
             ---
 
@@ -101,18 +56,10 @@ jobs:
             - Python 3.9+ (`xcode-select --install`)
             - API Keys — prompted on first launch:
               - [Groq API Key](https://console.groq.com) (free)
-              - [fal.ai API Key](https://fal.ai/dashboard) (~$0.04/clip with Wan 2.2)
-
-            ### What it does
-            Describe a video idea → AI handles research, scripting, storyboarding, and rendering — fully automated 12-stage pipeline.
+              - [fal.ai API Key](https://fal.ai/dashboard) (~$0.04/clip)
 
             ### First Launch
-            The app auto-creates a Python environment on first run (~15 seconds). After that, launches are instant.
-
-            ---
-
-            **SHA-256:** `${{ steps.sha.outputs.hash }}`
-          files: |
-            director-cut_${{ steps.version.outputs.version }}_aarch64.dmg
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            App auto-creates a Python environment on first run (~15 sec). After that, instant.
+          releaseDraft: true
+          prerelease: false
+          args: --target aarch64-apple-darwin

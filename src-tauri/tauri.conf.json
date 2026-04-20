@@ -36,8 +36,7 @@
     "resources": {
       "../backend/app": "backend/app",
       "../backend/main.py": "backend/main.py",
-      "../backend/pyproject.toml": "backend/pyproject.toml",
-      "../backend/.env": "backend/.env"
+      "../backend/pyproject.toml": "backend/pyproject.toml"
     },
     "icon": [
       "icons/32x32.png",
