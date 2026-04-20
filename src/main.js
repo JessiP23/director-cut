@@ -84,10 +84,9 @@ function setTakeExecutionActive(isActive) {
 
 function updateTakeIndicator(sceneEl) {
   const indicator = document.getElementById("take-indicator");
-  const timeline = document.getElementById("agent-take-timeline");
-  if (!indicator || !timeline || !sceneEl) return;
-  indicator.style.display = "block";
-  indicator.style.top = `${sceneEl.offsetTop + Math.max(10, sceneEl.offsetHeight * 0.5)}px`;
+  if (!indicator || !sceneEl) return;
+  // Now just a small dot row — no absolute positioning needed
+  indicator.style.display = "flex";
 }
 
 function resetAgentTakeTimeline() {
