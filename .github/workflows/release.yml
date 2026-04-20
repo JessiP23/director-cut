@@ -26,6 +26,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          cache-on-failure: true
 
       # ── Python (needed by Tauri bundler for backend) ────────
       - name: Set up Python
@@ -36,6 +37,10 @@ jobs:
       # ── System deps ─────────────────────────────────────────
       - name: Install FFmpeg
         run: brew install ffmpeg
+
+      # ── Tauri CLI ───────────────────────────────────────────
+      - name: Install cargo-tauri
+        run: cargo install tauri-cli --version "^2" --locked
 
       # ── Read version from tauri.conf.json ───────────────────
       - name: Read version
