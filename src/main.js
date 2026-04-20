@@ -190,8 +190,16 @@ async function startQuickRun(prompt) {
   toast("Starting production: " + prompt, "info");
   try {
     if (!backendRunning) {
-      toast("Backend not running — starting it first…", "info");
-      await toggleBackend();
+      setAppStatus("Starting engine…");
+      try {
+        await invoke("start_backend");
+        backendRunning = true;
+        document.getElementById("backend-status-dot").classList.add("online");
+        document.getElementById("backend-label").textContent = "Engine Running";
+      } catch (e) {
+        toast("Failed to start engine: " + e, "error");
+        return;
+      }
       await new Promise(r => setTimeout(r, 3000));
     }
     let projects;
@@ -276,6 +284,7 @@ async function loadRuns(projectId = null) {
 }
 
 function showPipeline(run) {
+  document.getElementById("run-list").style.display = "none";
   document.getElementById("pipeline-view").style.display = "block";
   document.getElementById("output-view").style.display = "none";
   document.getElementById("pipeline-run-id").textContent = run.id.slice(0, 8);
@@ -651,12 +660,15 @@ window.addEventListener("DOMContentLoaded", () => {
       const page = link.dataset.page;
       navigateTo(page);
       if (page === "projects") loadProjects();
-      if (page === "runs") loadRuns(selectedProjectId);
+      if (page === "runs") {
+        document.getElementById("run-list").style.display = "";
+        document.getElementById("pipeline-view").style.display = "none";
+        loadRuns(selectedProjectId);
+      }
       if (page === "artifacts") loadMediaLibrary();
       if (page === "settings") loadSettings();
     });
   });
-  document.getElementById("btn-backend-toggle").addEventListener("click", toggleBackend);
   document.getElementById("quick-start-form").addEventListener("submit", (e) => {
     e.preventDefault();
     const p = document.getElementById("quick-prompt").value.trim();
@@ -687,7 +699,20 @@ window.addEventListener("DOMContentLoaded", () => {
   }
   restoreContext();
   refreshScopeBadges();
-  checkBackendHealth();
+  // Auto-start backend engine
+  (async () => {
+    try {
+      await checkBackendHealth();
+      if (!backendRunning) {
+        await invoke("start_backend");
+        backendRunning = true;
+        document.getElementById("backend-status-dot").classList.add("online");
+        document.getElementById("backend-label").textContent = "Engine Running";
+      }
+    } catch (e) {
+      console.error("Auto-start backend failed:", e);
+    }
+  })();
   loadProjects();
   loadRuns();
   loadMediaLibrary();

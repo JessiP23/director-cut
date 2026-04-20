@@ -90,8 +90,14 @@ async def _submit_video_job(
         "Content-Type": "application/json",
     }
     resp = await client.post(url, json=payload, headers=headers, timeout=30)
+    if resp.status_code in (401, 403):
+        detail = resp.json().get("detail", resp.text)
+        raise RuntimeError(f"fal.ai auth/billing error ({resp.status_code}): {detail}")
     resp.raise_for_status()
-    return resp.json()  # has request_id, status_url, response_url
+    data = resp.json()
+    if "status_url" not in data or "response_url" not in data:
+        raise RuntimeError(f"fal.ai unexpected submit response: {list(data.keys())}")
+    return data
 
 
 async def _poll_until_done(
@@ -350,7 +356,16 @@ async def render_node(state: dict) -> dict:
             else:
                 await think(run_id, stage, f"Scene {i+1} — empty or missing video")
         except Exception as e:
-            await think(run_id, stage, f"Scene {i+1} failed: {str(e)[:200]}")
+            err_msg = str(e)[:200]
+            await think(run_id, stage, f"Scene {i+1} failed: {err_msg}")
+            # Stop immediately on auth/billing errors
+            if "auth/billing" in str(e).lower() or "exhausted" in str(e).lower():
+                state["outputs"][stage] = {"rendered": False, "error": err_msg}
+                state["current_stage"] = Stage.PACKAGE.value
+                await record_step(run_id, stage, "failed", state["outputs"][stage], error=err_msg)
+                await checkpoint(state, stage)
+                await emit_progress(run_id, stage, f"Render failed — {err_msg}")
+                return state
 
     if not raw_paths:
         state["outputs"][stage] = {"rendered": False, "error": "All scene video generations failed"}

@@ -80,6 +80,10 @@
 }
 
 .sidebar-footer { padding: 12px 16px; border-top: 1px solid var(--border); }
+.engine-status {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; color: var(--text-3); font-weight: 500;
+}
 .btn-backend {
   width: 100%; display: flex; align-items: center; gap: 8px; justify-content: center;
   padding: 8px 12px; font-size: 12px; font-weight: 600;
