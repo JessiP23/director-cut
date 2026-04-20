@@ -19,8 +19,24 @@ struct AppState {
 // ---------------------------------------------------------------------------
 
 fn resolve_backend_dir() -> PathBuf {
-    // When running via `cargo tauri dev`, CWD is the project root or src-tauri.
-    // Try multiple candidates to find the backend folder.
+    // 1. Bundled inside .app → Contents/Resources/backend
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(exe) = std::env::current_exe() {
+            // exe is .app/Contents/MacOS/director-cut
+            if let Some(macos_dir) = exe.parent() {
+                let resources_backend = macos_dir
+                    .parent() // Contents
+                    .map(|p| p.join("Resources").join("backend"));
+                if let Some(rb) = resources_backend {
+                    if rb.join("app").exists() {
+                        return rb;
+                    }
+                }
+            }
+        }
+    }
+    // 2. Dev mode – try relative paths from CWD / CARGO_MANIFEST_DIR
     let candidates = vec![
         PathBuf::from("backend"),
         PathBuf::from("../backend"),
@@ -44,6 +60,33 @@ fn venv_python(backend_dir: &PathBuf) -> PathBuf {
     }
 }
 
+/// Ensure the venv exists and deps are installed (for bundled app).
+fn ensure_venv(backend_dir: &PathBuf) {
+    // Ensure data dir exists for SQLite
+    let data_dir = backend_dir.join("data");
+    if !data_dir.exists() {
+        let _ = std::fs::create_dir_all(&data_dir);
+    }
+
+    let venv_dir = backend_dir.join("venv");
+    if venv_dir.join("bin").join("python").exists() {
+        return; // already set up
+    }
+    // Create venv
+    let _ = Command::new("python3")
+        .args(["-m", "venv", "venv"])
+        .current_dir(backend_dir)
+        .output();
+    // Install deps
+    let pip = venv_dir.join("bin").join("pip");
+    if pip.exists() {
+        let _ = Command::new(&pip)
+            .args(["install", "-q", "fastapi", "uvicorn[standard]", "aiosqlite", "httpx", "python-dotenv", "groq"])
+            .current_dir(backend_dir)
+            .output();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Commands – exposed to the frontend via Tauri IPC
 // ---------------------------------------------------------------------------
@@ -63,9 +106,10 @@ fn start_backend(state: State<AppState>) -> Result<BackendStatus, String> {
         return Ok(BackendStatus { running: true, port: state.backend_port, message: "Already running".into() });
     }
     let bd = state.backend_dir.lock().map_err(|e| e.to_string())?;
+    ensure_venv(&bd);
     let python = venv_python(&bd);
     let child = Command::new(&python)
-        .args(["-m", "uvicorn", "app.server:app", "--host", "127.0.0.1", "--port", &state.backend_port.to_string(), "--reload"])
+        .args(["-m", "uvicorn", "app.server:app", "--host", "127.0.0.1", "--port", &state.backend_port.to_string()])
         .current_dir(&*bd)
         .spawn()
         .map_err(|e| format!("Failed to start backend with {:?}: {e}", python))?;

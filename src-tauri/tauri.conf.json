@@ -30,6 +30,12 @@
   "bundle": {
     "active": true,
     "targets": ["dmg", "app"],
+    "resources": {
+      "../backend/app": "backend/app",
+      "../backend/main.py": "backend/main.py",
+      "../backend/pyproject.toml": "backend/pyproject.toml",
+      "../backend/.env": "backend/.env"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
