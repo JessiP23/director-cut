@@ -150,6 +150,22 @@ async function loadProjects() {
     refreshScopeBadges();
 
     document.getElementById("stat-projects").textContent = projects.length;
+
+    // Populate the quick-start project selector
+    const quickProj = document.getElementById("quick-project");
+    if (quickProj) {
+      const prev = quickProj.value;
+      quickProj.innerHTML = projects.map((p) =>
+        `<option value="${p.id}">${p.name}</option>`
+      ).join("") + '<option value="_new">+ New Project…</option>';
+      // Restore selection
+      if (selectedProjectId && projectIds.has(selectedProjectId)) {
+        quickProj.value = selectedProjectId;
+      } else if (prev && prev !== "_new") {
+        quickProj.value = prev;
+      }
+    }
+
     const list = document.getElementById("project-list");
     list.innerHTML = projects.length
       ? projects.map((p) =>
@@ -175,22 +191,40 @@ async function loadProjects() {
 }
 
 async function createProject() {
-  const name = prompt("Project name:");
-  if (!name) return;
-  const created = await api("POST", "/api/projects", { name, description: "" });
-  selectedProjectId = created.id;
-  mediaProjectFilter = created.id;
-  persistContext();
-  refreshScopeBadges();
-  loadProjects();
+  return new Promise((resolve) => {
+    const overlay = document.getElementById("new-project-overlay");
+    const nameInput = document.getElementById("new-project-name");
+    const descInput = document.getElementById("new-project-desc");
+    nameInput.value = "";
+    descInput.value = "";
+    overlay.style.display = "flex";
+    nameInput.focus();
+
+    const cleanup = () => { overlay.style.display = "none"; };
+
+    document.getElementById("new-project-cancel").onclick = () => { cleanup(); resolve(null); };
+    overlay.onclick = (e) => { if (e.target === overlay) { cleanup(); resolve(null); } };
+
+    document.getElementById("new-project-create").onclick = async () => {
+      const name = nameInput.value.trim();
+      if (!name) { nameInput.focus(); return; }
+      const created = await api("POST", "/api/projects", { name, description: descInput.value.trim() });
+      selectedProjectId = created.id;
+      mediaProjectFilter = created.id;
+      persistContext();
+      refreshScopeBadges();
+      loadProjects();
+      cleanup();
+      resolve(created);
+    };
+  });
 }
 
 // --- Runs ---
 async function startQuickRun(prompt) {
-  toast("Starting production: " + prompt, "info");
   try {
     if (!backendRunning) {
-      setAppStatus("Starting engine…");
+      toast("Starting engine…", "info");
       try {
         await invoke("start_backend");
         backendRunning = true;
@@ -209,7 +243,18 @@ async function startQuickRun(prompt) {
       toast("Cannot reach backend. Make sure it's running.", "error");
       return;
     }
-    let pid = selectedProjectId || (projects.length ? projects[0].id : (await api("POST", "/api/projects", { name: "Quick Project" })).id);
+
+    // Resolve project from the selector
+    const selector = document.getElementById("quick-project");
+    let pid = selector.value;
+    if (pid === "_new") {
+      const created = await createProject();
+      if (!created) return; // user cancelled
+      pid = created.id;
+    }
+    selectedProjectId = pid;
+    persistContext();
+    refreshScopeBadges();
 
     let persistedSettings = {};
     try {
@@ -631,7 +676,8 @@ async function loadSettings() {
   try {
     const s = await api("GET", "/api/settings");
     if (s.groq_api_key) document.getElementById("setting-groq-key").value = s.groq_api_key;
-    if (s.openrouter_api_key) document.getElementById("setting-api-key").value = s.openrouter_api_key;
+    if (s.fal_api_key) document.getElementById("setting-fal-key").value = s.fal_api_key;
+    if (s.video_model) document.getElementById("setting-video-model").value = s.video_model;
     if (s.model) document.getElementById("setting-model").value = s.model;
     if (s.ffmpeg_path) document.getElementById("setting-ffmpeg").value = s.ffmpeg_path;
     document.getElementById("setting-max-scenes").value = s.max_scenes ?? 4;
@@ -644,12 +690,44 @@ async function saveSettings(e) {
   e.preventDefault();
   await api("PUT", "/api/settings", {
     groq_api_key: document.getElementById("setting-groq-key").value,
-    openrouter_api_key: document.getElementById("setting-api-key").value,
+    fal_api_key: document.getElementById("setting-fal-key").value,
+    video_model: document.getElementById("setting-video-model").value,
     model: document.getElementById("setting-model").value,
     ffmpeg_path: document.getElementById("setting-ffmpeg").value,
     max_scenes: parseInt(document.getElementById("setting-max-scenes").value || "4", 10),
   });
   toast("Settings saved!", "success");
+}
+
+// --- Onboarding ---
+function showOnboarding(existingSettings = {}) {
+  const overlay = document.getElementById("onboarding-overlay");
+  const groqInput = document.getElementById("onboard-groq-key");
+  const falInput = document.getElementById("onboard-fal-key");
+  groqInput.value = existingSettings.groq_api_key || "";
+  falInput.value = existingSettings.fal_api_key || "";
+  overlay.style.display = "flex";
+
+  document.getElementById("onboard-save-btn").onclick = async () => {
+    const groq = groqInput.value.trim();
+    const fal = falInput.value.trim();
+    if (!groq) { toast("Groq API key is required", "error"); groqInput.focus(); return; }
+    if (!fal) { toast("fal.ai API key is required", "error"); falInput.focus(); return; }
+    try {
+      await api("PUT", "/api/settings", {
+        groq_api_key: groq,
+        fal_api_key: fal,
+        video_model: "fal-ai/wan/v2.2-a14b/text-to-video",
+        model: "llama-3.3-70b-versatile",
+        max_scenes: 4,
+      });
+      overlay.style.display = "none";
+      toast("You're all set! Start your first production.", "success");
+      loadSettings();
+    } catch (e) {
+      toast("Failed to save: " + e, "error");
+    }
+  };
 }
 
 // --- Init ---
@@ -676,6 +754,22 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   document.getElementById("quick-max-scenes").addEventListener("input", (e) => {
     document.getElementById("quick-max-scenes-value").textContent = e.target.value;
+  });
+  // When project selector changes to _new, trigger create
+  document.getElementById("quick-project").addEventListener("change", async (e) => {
+    if (e.target.value === "_new") {
+      const created = await createProject();
+      if (created) {
+        e.target.value = created.id;
+        selectedProjectId = created.id;
+        persistContext();
+        refreshScopeBadges();
+        loadProjects();
+      } else {
+        // Cancelled — pick first project or keep _new
+        if (projectsCache.length) e.target.value = projectsCache[0].id;
+      }
+    }
   });
   document.getElementById("btn-new-project").addEventListener("click", createProject);
   document.getElementById("settings-form").addEventListener("submit", saveSettings);
@@ -709,6 +803,16 @@ window.addEventListener("DOMContentLoaded", () => {
         document.getElementById("backend-status-dot").classList.add("online");
         document.getElementById("backend-label").textContent = "Engine Running";
       }
+      // Wait a moment for backend to be ready, then check onboarding
+      await new Promise(r => setTimeout(r, 1500));
+      try {
+        const settings = await api("GET", "/api/settings");
+        const hasGroq = settings.groq_api_key && String(settings.groq_api_key).startsWith("gsk_");
+        const hasFal = settings.fal_api_key && String(settings.fal_api_key).length > 10;
+        if (!hasGroq || !hasFal) {
+          showOnboarding(settings);
+        }
+      } catch { /* backend not ready yet, skip onboarding check */ }
     } catch (e) {
       console.error("Auto-start backend failed:", e);
     }

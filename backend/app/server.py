@@ -48,8 +48,28 @@ async def health():
 
 @app.on_event("startup")
 async def startup():
-    """Initialize DB on startup."""
+    """Initialize DB on startup and restore saved settings into env."""
     from app.db.connection import get_db
     db = await get_db()
     await db.close()
+    # Restore saved settings into environment so agents use them
+    try:
+        from app.db.repository import SettingsRepository
+        repo = SettingsRepository()
+        saved = await repo.get_all()
+        _env_map = {
+            "groq_api_key": "GROQ_API_KEY",
+            "fal_api_key": "FAL_KEY",
+            "video_model": "FAL_VIDEO_MODEL",
+            "ffmpeg_path": "FFMPEG_PATH",
+            "model": "DIRECTOR_MODEL",
+        }
+        for skey, evar in _env_map.items():
+            val = saved.get(skey)
+            if val:
+                os.environ[evar] = str(val)
+        if saved.get("fal_api_key"):
+            os.environ["FAL_API_KEY"] = str(saved["fal_api_key"])
+    except Exception as e:
+        print(f"⚠️ Could not restore settings: {e}")
     print("✅ Director's Cut backend ready on http://127.0.0.1:9420")

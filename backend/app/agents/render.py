@@ -23,11 +23,12 @@ from app.runtime.event_bus import event_bus
 
 # fal.ai configuration
 FAL_API_BASE = "https://queue.fal.run"
-# Model priority – user can override via FAL_VIDEO_MODEL env var.
+# Model priority – user can override via FAL_VIDEO_MODEL env var or Settings.
 DEFAULT_MODELS = [
+    "fal-ai/wan/v2.2-a14b/text-to-video",
+    "fal-ai/ltx-video/v0.9.1/text-to-video",
     "fal-ai/minimax/hailuo-02/standard/text-to-video",
     "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
-    "fal-ai/wan/v2.2-a14b/text-to-video",
 ]
 FAL_POLL_INTERVAL = 5   # seconds between status checks
 FAL_TIMEOUT = 600        # max wait per clip (10 min)
@@ -165,10 +166,14 @@ async def _generate_scene_video(
         f"Photorealistic, dramatic lighting, smooth camera movement, high production value."
     )
 
-    # fal.ai duration depends on model — minimax uses "6" or "10", kling uses "5" or "10"
+    # fal.ai duration depends on model
     model_lower = model.lower()
     if "minimax" in model_lower or "hailuo" in model_lower:
         fal_duration = "10" if duration > 7 else "6"
+    elif "ltx" in model_lower:
+        fal_duration = "5"  # LTX uses simple seconds
+    elif "wan" in model_lower:
+        fal_duration = "5"  # Wan 2.2 uses seconds
     else:
         fal_duration = "10" if duration > 7 else "5"
 

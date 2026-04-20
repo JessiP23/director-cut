@@ -234,6 +234,14 @@ input:focus, textarea:focus {
 }
 .label-hint { opacity: 0.5; font-weight: 400; }
 
+.form-group select {
+  width: 100%; padding: 10px 12px; font-size: 13px;
+  background: var(--bg-2); color: var(--text-1);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  outline: none; cursor: pointer;
+}
+.form-group select:focus { border-color: var(--accent); }
+
 .settings-grid { max-width: 560px; }
 .settings-section h4 {
   font-size: 14px; font-weight: 700; margin-bottom: 16px;
@@ -450,8 +458,27 @@ input:focus, textarea:focus {
 ::-webkit-scrollbar-thumb { background: var(--text-3); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-2); }
 
+/* ─── Modals ─── */
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0,0,0,0.7); backdrop-filter: blur(8px);
+  display: flex; align-items: center; justify-content: center;
+}
+.modal-card {
+  padding: 32px; border-radius: var(--radius-lg);
+  animation: modalIn 0.25s ease;
+}
+@keyframes modalIn {
+  from { opacity: 0; transform: translateY(16px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ─── Form Row ─── */
+.form-row { display: flex; gap: 12px; align-items: end; }
+
 /* ─── Responsive ─── */
 @media (max-width: 900px) {
   .dashboard-grid { grid-template-columns: repeat(2, 1fr); }
   #main-content { padding: 24px 20px; }
+  .form-row { flex-direction: column; }
 }
