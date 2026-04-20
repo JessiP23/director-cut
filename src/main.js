@@ -17,6 +17,123 @@ const STORAGE_KEYS = {
   mediaProjectFilter: "director.mediaProjectFilter",
 };
 
+const MAX_TAKE_SCENES = 120;
+let takeSequence = 0;
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function classifyTakeKind(data) {
+  const type = (data?.type || "").toLowerCase();
+  const stage = (data?.stage || "").toLowerCase();
+  const message = (data?.message || "").toLowerCase();
+
+  if (type.includes("failed") || type.includes("error") || message.includes("blocked")) return "blocked";
+  if (type.includes("complete") || /test(s)?\s+pass/.test(message)) return "pass";
+  if (message.includes("warn")) return "warning";
+  if (type.includes("thinking") || stage.includes("planning") || type.includes("planning")) return "planning";
+  if (type.includes("shell") || type.includes("stdout") || type.includes("stderr")) return "shell";
+  return "shell";
+}
+
+function renderFilePath(pathValue) {
+  if (!pathValue) return "";
+  const clean = String(pathValue);
+  const parts = clean.split("/").filter(Boolean);
+  if (!parts.length) return `<div class="scene-path"><span class="scene-file-name">${escapeHtml(clean)}</span></div>`;
+  const file = parts[parts.length - 1];
+  const dir = clean.slice(0, clean.length - file.length);
+  return `<div class="scene-path"><span class="scene-file-dir">${escapeHtml(dir)}</span><span class="scene-file-name">${escapeHtml(file)}</span></div>`;
+}
+
+function renderDiff(diffText) {
+  if (!diffText) return "";
+  const lines = String(diffText).split("\n");
+  const rows = lines.map((line, index) => {
+    const trimmed = line.trimStart();
+    let cls = "";
+    if (trimmed.startsWith("+")) cls = " diff-line-add";
+    else if (trimmed.startsWith("-")) cls = " diff-line-del";
+    return `<div class="diff-line${cls}"><span class="diff-line-no">${index + 1}</span><span class="diff-line-txt">${escapeHtml(line)}</span></div>`;
+  }).join("");
+  return `<div class="scene-diff">${rows}</div>`;
+}
+
+function renderSceneBody(data) {
+  const message = data?.message ? `<pre class="scene-shell">${escapeHtml(data.message)}</pre>` : "";
+  const shellOutput = data?.shell_output ? `<pre class="scene-shell">${escapeHtml(data.shell_output)}</pre>` : "";
+  const testOutput = data?.test_results
+    ? `<pre class="scene-shell">${escapeHtml(typeof data.test_results === "string" ? data.test_results : JSON.stringify(data.test_results, null, 2))}</pre>`
+    : "";
+  const path = renderFilePath(data?.file_path || data?.path || data?.file);
+  const diff = renderDiff(data?.diff || data?.patch || data?.git_diff);
+
+  return `${path}${diff}${shellOutput}${testOutput}${message || (!path && !diff && !shellOutput && !testOutput ? `<pre class="scene-shell">${escapeHtml(JSON.stringify(data, null, 2))}</pre>` : "")}`;
+}
+
+function setTakeExecutionActive(isActive) {
+  const btn = document.getElementById("interrupt-btn");
+  if (btn) btn.style.display = isActive ? "inline-flex" : "none";
+}
+
+function updateTakeIndicator(sceneEl) {
+  const indicator = document.getElementById("take-indicator");
+  const timeline = document.getElementById("agent-take-timeline");
+  if (!indicator || !timeline || !sceneEl) return;
+  indicator.style.display = "block";
+  indicator.style.top = `${sceneEl.offsetTop + Math.max(10, sceneEl.offsetHeight * 0.5)}px`;
+}
+
+function resetAgentTakeTimeline() {
+  const timeline = document.getElementById("agent-take-timeline");
+  const indicator = document.getElementById("take-indicator");
+  const thinking = document.getElementById("agent-thinking");
+  if (timeline) timeline.innerHTML = "";
+  if (indicator) indicator.style.display = "none";
+  if (thinking) thinking.style.display = "none";
+  takeSequence = 0;
+}
+
+function appendAgentTakeScene(data) {
+  const timeline = document.getElementById("agent-take-timeline");
+  if (!timeline) return;
+
+  const kind = classifyTakeKind(data);
+  const details = document.createElement("details");
+  details.className = `scene-card scene-card--${kind}`;
+  details.dataset.sceneIndex = String(++takeSequence);
+
+  const when = new Date().toLocaleTimeString();
+  const title = escapeHtml(data?.stage || data?.type || "agent-step");
+  const subtitle = escapeHtml(data?.type || "event");
+  details.innerHTML = `
+    <summary>
+      <div class="scene-summary-main">
+        <span class="scene-title">${title}</span>
+        <span class="scene-kind">${subtitle}</span>
+      </div>
+      <span class="scene-time">${when}</span>
+    </summary>
+    <div class="scene-body">${renderSceneBody(data)}</div>
+  `;
+
+  timeline.appendChild(details);
+
+  while (timeline.children.length > MAX_TAKE_SCENES) {
+    timeline.removeChild(timeline.firstElementChild);
+  }
+
+  details.open = true;
+  updateTakeIndicator(details);
+  timeline.scrollTop = timeline.scrollHeight;
+}
+
 function persistContext() {
   if (selectedProjectId) {
     localStorage.setItem(STORAGE_KEYS.selectedProjectId, selectedProjectId);
@@ -333,17 +450,14 @@ function showPipeline(run) {
   document.getElementById("pipeline-view").style.display = "block";
   document.getElementById("output-view").style.display = "none";
   document.getElementById("pipeline-run-id").textContent = run.id.slice(0, 8);
-  // Reset stages
-  document.querySelectorAll(".stage-node").forEach((s) => s.classList.remove("active", "completed", "failed"));
+  resetAgentTakeTimeline();
+  setTakeExecutionActive(run.status === "running" || run.status === "awaiting_approval");
   // Hide video + results panels
   document.getElementById("preview-panel").style.display = "none";
   document.getElementById("video-panel").style.display = "none";
   document.getElementById("results-panel").style.display = "none";
   document.getElementById("preview-list").innerHTML = "";
   previewClips = [];
-  // Mark current
-  const cur = document.querySelector(`.stage-node[data-stage="${run.current_stage}"]`);
-  if (cur) cur.classList.add("active");
 }
 
 function appendPreviewClip(url, index, total) {
@@ -388,28 +502,17 @@ function appendPreviewClip(url, index, total) {
 
 function streamLogs(runId) {
   if (eventSource) eventSource.close();
-  const logEl = document.getElementById("log-output");
-  logEl.textContent = "";
+  resetAgentTakeTimeline();
+  setTakeExecutionActive(true);
   eventSource = new EventSource(`http://127.0.0.1:9420/api/events/stream/${runId}`);
   eventSource.onmessage = (e) => {
     const data = JSON.parse(e.data);
-    const ts = new Date().toLocaleTimeString();
 
-    if (data.type === "stage_thinking") {
-      logEl.textContent += `  ${data.message}\n`;
-    } else {
-      logEl.textContent += `${ts} [${data.type}] ${data.message || JSON.stringify(data)}\n`;
-    }
-    logEl.scrollTop = logEl.scrollHeight;
+    appendAgentTakeScene(data);
 
-    // Update pipeline stage indicators
-    if (data.type === "stage_start" && data.stage) {
-      const el = document.querySelector(`.stage-node[data-stage="${data.stage}"]`);
-      if (el) { el.classList.remove("completed", "failed"); el.classList.add("active"); }
-    }
-    if (data.type === "stage_complete" && data.stage) {
-      const el = document.querySelector(`.stage-node[data-stage="${data.stage}"]`);
-      if (el) { el.classList.remove("active"); el.classList.add("completed"); }
+    const thinking = document.getElementById("agent-thinking");
+    if (thinking) {
+      thinking.style.display = data.type === "stage_thinking" ? "inline-flex" : "none";
     }
 
     // Approval gate
@@ -425,17 +528,24 @@ function streamLogs(runId) {
     if (data.type === "run_completed") {
       toast("Production complete.", "success");
       eventSource.close();
+      setTakeExecutionActive(false);
+      if (thinking) thinking.style.display = "none";
       loadRunResults(runId);
       loadRuns(selectedProjectId);
     }
     if (data.type === "run_failed") {
       toast("Run failed: " + (data.error || "unknown"), "error");
       eventSource.close();
+      setTakeExecutionActive(false);
+      if (thinking) thinking.style.display = "none";
     }
   };
   eventSource.onerror = () => {
-    logEl.textContent += "[connection closed]\n";
+    appendAgentTakeScene({ type: "stream_closed", stage: "connection", message: "[connection closed]" });
     eventSource.close();
+    setTakeExecutionActive(false);
+    const thinking = document.getElementById("agent-thinking");
+    if (thinking) thinking.style.display = "none";
   };
 }
 

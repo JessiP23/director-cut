@@ -106,41 +106,19 @@
 
           <div id="pipeline-view" class="pipeline-container" style="display:none;">
             <div class="pipeline-header">
-              <h3>Pipeline <span class="run-badge" id="pipeline-run-id"></span></h3>
-            </div>
-
-            <div class="pipeline-track">
-              <div class="stage-node" data-stage="intake"><span class="stage-dot"></span><span class="stage-label">Intake</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="planning"><span class="stage-dot"></span><span class="stage-label">Plan</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="research"><span class="stage-dot"></span><span class="stage-label">Research</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="script"><span class="stage-dot"></span><span class="stage-label">Script</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="storyboard"><span class="stage-dot"></span><span class="stage-label">Storyboard</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="assets"><span class="stage-dot"></span><span class="stage-label">Assets</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="audio"><span class="stage-dot"></span><span class="stage-label">Audio</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="edit_assembly"><span class="stage-dot"></span><span class="stage-label">Edit</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="qa"><span class="stage-dot"></span><span class="stage-label">QA</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="render"><span class="stage-dot"></span><span class="stage-label">Render</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="package"><span class="stage-dot"></span><span class="stage-label">Package</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="export"><span class="stage-dot"></span><span class="stage-label">Export</span></div>
-            </div>
-
-            <div class="pipeline-body">
-              <div id="log-panel" class="log-panel glass-card">
-                <div class="log-header"><span class="log-dot"></span> Live Output</div>
-                <pre id="log-output"></pre>
+              <h3>Agent Take <span class="run-badge" id="pipeline-run-id"></span></h3>
+              <div id="agent-thinking" class="thinking-dots" aria-label="Agent thinking" style="display:none;">
+                <span></span><span></span><span></span>
               </div>
             </div>
+            <div id="agent-take-panel" class="agent-take-panel glass-card">
+              <div id="take-indicator" class="take-indicator" style="display:none;">
+                <span class="take-indicator-dot"></span>
+              </div>
+              <div id="agent-take-timeline" class="agent-take-timeline"></div>
+            </div>
+
+            <button id="interrupt-btn" class="interrupt-btn" type="button" style="display:none;">⏸ Pause</button>
           </div>
 
           <div id="output-view" class="output-container" style="display:none;">
