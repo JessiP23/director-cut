@@ -73,6 +73,12 @@ async def get_run(run_id: str):
 @router.post("/{run_id}/cancel")
 async def cancel(run_id: str):
     from app.db.connection import get_db
+    from app.graph.engine import cancel_run
+
+    # Signal the pipeline task to stop
+    await cancel_run(run_id)
+
+    # Mark as cancelled in DB
     db = await get_db()
     await db.execute("UPDATE runs SET status='cancelled', updated_at=datetime('now') WHERE id=?", (run_id,))
     await db.commit()

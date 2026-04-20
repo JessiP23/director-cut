@@ -173,6 +173,17 @@ async def _execute(run_id: str, state: dict):
 
     except asyncio.CancelledError:
         log.info("run_cancelled", run_id=run_id)
+        await event_bus.emit(run_id, "run_cancelled", {
+            "stage": "interrupt",
+            "message": "Run cancelled by user.",
+        })
+        db = await get_db()
+        await db.execute(
+            "UPDATE runs SET status='cancelled', updated_at=datetime('now') WHERE id=?",
+            (run_id,),
+        )
+        await db.commit()
+        await db.close()
     except Exception as exc:
         log.error("run_failed", run_id=run_id, error=str(exc))
         traceback.print_exc()

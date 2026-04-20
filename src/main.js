@@ -466,6 +466,7 @@ async function loadRuns(projectId = null) {
 }
 
 function showPipeline(run) {
+  currentRunId = run.id;
   document.getElementById("run-list").style.display = "none";
   document.getElementById("pipeline-view").style.display = "block";
   document.getElementById("output-view").style.display = "none";
