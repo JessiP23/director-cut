@@ -242,3 +242,11 @@ director-cut/  - cargo tauri android dev
 ## License
 
 MIT
+
+
+
+## Releases
+
+- ./scripts/release.sh           # patch bump: 0.2.0 → 0.2.1
+- ./scripts/release.sh minor     # minor bump: 0.2.0 → 0.3.0
+- ./scripts/release.sh 0.5.0     # exact version
