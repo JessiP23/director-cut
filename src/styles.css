@@ -921,3 +921,422 @@ input:focus, textarea:focus, select:focus {
   #main-content { padding: 20px 16px; }
   .form-row { flex-direction: column; }
 }
+
+/* ============================================================
+   AGENT TAKE PANEL
+   ============================================================ */
+:root {
+  --violet: #7c6aef;
+  --violet-glow: rgba(124, 106, 239, 0.22);
+  --red-glow: rgba(239, 68, 68, 0.14);
+}
+
+/* Panel wrapper */
+.agent-take-panel {
+  position: relative;
+  background: var(--bg-1);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+/* Scrollable timeline */
+.agent-take-timeline {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 480px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+/* Take indicator line */
+.take-indicator {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--violet);
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+  transition: top 80ms ease, opacity 60ms ease;
+  z-index: 10;
+}
+
+.take-indicator-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--violet);
+  box-shadow: 0 0 8px var(--violet-glow);
+  flex-shrink: 0;
+  margin-left: 12px;
+  animation: takePulse 1.6s infinite ease;
+}
+
+@keyframes takePulse {
+  0%, 100% { box-shadow: 0 0 6px var(--violet-glow); }
+  50%       { box-shadow: 0 0 18px var(--violet-glow); }
+}
+
+/* Thinking dots */
+.thinking-dots {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  height: 16px;
+}
+
+.thinking-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-3);
+  animation: thinkDot 1.4s infinite ease;
+}
+
+.thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes thinkDot {
+  0%, 80%, 100% { opacity: 0.2; transform: scale(0.75); }
+  40%           { opacity: 1;   transform: scale(1); }
+}
+
+/* ── Scene cards ─────────────────────────────────────────── */
+.scene-card {
+  border-left: 3px solid var(--border-bright, #3f3f46);
+  background: var(--bg-2);
+  border-radius: 0 6px 6px 0;
+  transition: border-left-color 60ms ease;
+}
+
+.scene-card--planning { border-left-color: var(--violet); }
+.scene-card--pass     { border-left-color: var(--green); }
+.scene-card--warning  { border-left-color: var(--amber); }
+.scene-card--blocked  { border-left-color: var(--red); }
+.scene-card--shell    { border-left-color: #3f3f46; }
+
+/* summary row */
+.scene-card > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 12px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  gap: 8px;
+}
+
+.scene-card > summary::-webkit-details-marker { display: none; }
+
+.scene-summary-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.scene-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scene-kind {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.scene-time {
+  font-size: 10px;
+  font-family: "JetBrains Mono", monospace;
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+
+/* body */
+.scene-body {
+  padding: 0 12px 10px 12px;
+}
+
+/* ── File path ───────────────────────────────────────────── */
+.scene-path {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+  margin-bottom: 6px;
+  word-break: break-all;
+}
+
+.scene-file-dir  { color: var(--text-3); }
+.scene-file-name { color: var(--text-1); font-weight: 700; }
+
+/* ── Diff viewer ─────────────────────────────────────────── */
+.scene-diff {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 6px;
+  border: 1px solid var(--border);
+}
+
+.diff-line {
+  display: flex;
+  gap: 8px;
+  padding: 1px 8px;
+  line-height: 1.65;
+}
+
+.diff-line-add { background: rgba(34, 197, 94, 0.10); }
+.diff-line-del { background: rgba(239, 68, 68, 0.10); }
+
+.diff-line-no {
+  color: var(--text-3);
+  min-width: 28px;
+  text-align: right;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.diff-line-txt {
+  color: var(--text-2);
+  white-space: pre;
+}
+
+/* ── Shell output ────────────────────────────────────────── */
+.scene-shell {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11.5px;
+  color: var(--text-3);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.65;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* ── Interrupt / Pause button ────────────────────────────── */
+.interrupt-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  border-radius: 999px;
+  background: transparent;
+  border: 1.5px solid var(--red);
+  color: var(--red);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 60ms ease, box-shadow 60ms ease;
+  flex-shrink: 0;
+}
+
+.interrupt-btn:hover {
+  background: var(--red-glow);
+  box-shadow: 0 0 12px var(--red-glow);
+}
+
+/* ============================================================
+   UI/UX IMPROVEMENTS v0.2
+   ============================================================ */
+
+/* Sidebar logo */
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 20px 16px 16px;
+}
+
+.sidebar-logo {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  object-fit: cover;
+}
+
+.brand-text h2 {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-1);
+  line-height: 1.2;
+}
+
+.brand-text .brand-tag {
+  font-size: 10px;
+  color: var(--text-3);
+  letter-spacing: 0.04em;
+}
+
+/* Active runs badge in nav */
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--green);
+  color: #000;
+  font-size: 10px;
+  font-weight: 700;
+  margin-left: 6px;
+  animation: badgePop 0.2s ease;
+}
+
+@keyframes badgePop {
+  0%   { transform: scale(0.6); opacity: 0; }
+  100% { transform: scale(1);   opacity: 1; }
+}
+
+/* Pipeline breadcrumb / back button */
+.pipeline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0 14px;
+  gap: 12px;
+}
+
+.pipeline-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-back {
+  background: none;
+  border: none;
+  color: var(--text-3);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 0;
+  transition: color 60ms ease;
+}
+
+.btn-back:hover { color: var(--text-1); }
+
+.breadcrumb-sep {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.pipeline-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pipeline-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin: 0;
+}
+
+/* Run list items */
+.run-item-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.run-item-meta {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.run-status {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.run-status--running          { background: rgba(34,197,94,0.12);  color: var(--green); }
+.run-status--awaiting_approval{ background: rgba(234,179,8,0.12);  color: var(--amber); }
+.run-status--completed        { background: rgba(250,250,250,0.08); color: var(--text-2); }
+.run-status--failed           { background: rgba(239,68,68,0.12);  color: var(--red); }
+
+/* Empty state */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 48px 20px;
+  text-align: center;
+  gap: 8px;
+}
+
+.empty-icon {
+  font-size: 36px;
+  margin-bottom: 4px;
+}
+
+.empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin: 0;
+}
+
+.empty-sub {
+  font-size: 13px;
+  color: var(--text-3);
+  max-width: 320px;
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* Hero card header row */
+.hero-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.hero-hint {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+/* Scene count badge */
+.badge-scenes {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--bg-3);
+  color: var(--text-1);
+  font-size: 11px;
+  font-weight: 700;
+  margin-left: 4px;
+}
+
+/* Cost hint */
+.form-cost-hint {
+  font-size: 11px;
+  color: var(--text-3);
+  margin: 6px 0 0;
+  padding: 0 2px;
+}

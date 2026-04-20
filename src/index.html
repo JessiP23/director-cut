@@ -12,13 +12,20 @@
       <!-- Sidebar -->
       <nav id="sidebar">
         <div class="sidebar-brand">
-          <h2>Director's Cut</h2>
-          <span class="brand-tag">AI Video Studio</span>
+          <img src="/assets/logo.png" alt="Director's Cut" class="sidebar-logo" />
+          <div class="brand-text">
+            <h2>Director's Cut</h2>
+            <span class="brand-tag">AI Video Studio</span>
+          </div>
         </div>
         <ul class="nav-links">
-          <li><a href="#" data-page="dashboard" class="active">Command Center</a></li>
+          <li><a href="#" data-page="dashboard" class="active">⌘ Command Center</a></li>
           <li><a href="#" data-page="projects">Projects</a></li>
-          <li><a href="#" data-page="runs">Productions</a></li>
+          <li>
+            <a href="#" data-page="runs">Productions
+              <span id="active-runs-badge" class="nav-badge" style="display:none;"></span>
+            </a>
+          </li>
           <li><a href="#" data-page="artifacts">Media Library</a></li>
           <li><a href="#" data-page="settings">Settings</a></li>
         </ul>
@@ -58,7 +65,10 @@
           </div>
 
           <div class="hero-card glass-card">
-            <h3>New Production</h3>
+            <div class="hero-header">
+              <h3>New Production</h3>
+              <span class="hero-hint">Powered by Groq + fal.ai</span>
+            </div>
             <p class="hero-desc">Describe your video idea and let the AI pipeline handle the rest — research, scripting, storyboarding, rendering, all automated.</p>
             <form id="quick-start-form" class="quick-start">
               <div class="form-row">
@@ -68,18 +78,19 @@
                     <option value="_new">+ New Project…</option>
                   </select>
                 </div>
-                <div class="form-group compact" style="width:120px;">
-                  <label for="quick-max-scenes">Scenes <span id="quick-max-scenes-value">4</span></label>
+                <div class="form-group compact" style="width:140px;">
+                  <label for="quick-max-scenes">Scenes <span class="badge-scenes" id="quick-max-scenes-value">4</span></label>
                   <input id="quick-max-scenes" type="range" min="1" max="8" step="1" value="4" />
                 </div>
               </div>
               <div class="input-wrapper">
                 <input id="quick-prompt" type="text" placeholder="e.g. A 60-second explainer about quantum computing…" autocomplete="off" />
-                <button type="submit" class="btn btn-glow">
+                <button type="submit" class="btn btn-glow" id="produce-btn">
                   <span>Produce</span>
                   <span class="btn-arrow">→</span>
                 </button>
               </div>
+              <p class="form-cost-hint" id="cost-hint">~$0.16 estimated · 4 scenes · Wan 2.2</p>
             </form>
           </div>
         </section>
@@ -95,51 +106,35 @@
 
         <!-- ─── Runs / Productions ─── -->
         <section id="page-runs" class="page">
-          <header class="page-header">
+          <header class="page-header" id="runs-page-header">
             <div>
               <h1>Productions</h1>
-              <p class="page-subtitle">Pipeline runs & output</p>
+              <p class="page-subtitle">Pipeline runs &amp; output</p>
               <p id="runs-scope-badge" class="scope-badge">Scoped to: All projects</p>
             </div>
+            <button id="interrupt-btn" class="interrupt-btn" type="button" style="display:none;">⏸ Pause Run</button>
           </header>
           <div id="run-list" class="item-list"></div>
 
           <div id="pipeline-view" class="pipeline-container" style="display:none;">
             <div class="pipeline-header">
-              <h3>Pipeline <span class="run-badge" id="pipeline-run-id"></span></h3>
-            </div>
-
-            <div class="pipeline-track">
-              <div class="stage-node" data-stage="intake"><span class="stage-dot"></span><span class="stage-label">Intake</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="planning"><span class="stage-dot"></span><span class="stage-label">Plan</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="research"><span class="stage-dot"></span><span class="stage-label">Research</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="script"><span class="stage-dot"></span><span class="stage-label">Script</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="storyboard"><span class="stage-dot"></span><span class="stage-label">Storyboard</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="assets"><span class="stage-dot"></span><span class="stage-label">Assets</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="audio"><span class="stage-dot"></span><span class="stage-label">Audio</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="edit_assembly"><span class="stage-dot"></span><span class="stage-label">Edit</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="qa"><span class="stage-dot"></span><span class="stage-label">QA</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="render"><span class="stage-dot"></span><span class="stage-label">Render</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="package"><span class="stage-dot"></span><span class="stage-label">Package</span></div>
-              <div class="stage-connector"></div>
-              <div class="stage-node" data-stage="export"><span class="stage-dot"></span><span class="stage-label">Export</span></div>
-            </div>
-
-            <div class="pipeline-body">
-              <div id="log-panel" class="log-panel glass-card">
-                <div class="log-header"><span class="log-dot"></span> Live Output</div>
-                <pre id="log-output"></pre>
+              <div class="pipeline-breadcrumb">
+                <button id="btn-back-to-runs" class="btn-back" type="button">← Productions</button>
+                <span class="breadcrumb-sep">/</span>
+                <span class="run-badge" id="pipeline-run-id"></span>
               </div>
+              <div class="pipeline-header-right">
+                <h3 class="pipeline-title">Agent Take</h3>
+                <div id="agent-thinking" class="thinking-dots" aria-label="Agent thinking" style="display:none;">
+                  <span></span><span></span><span></span>
+                </div>
+              </div>
+            </div>
+            <div id="agent-take-panel" class="agent-take-panel glass-card">
+              <div id="take-indicator" class="take-indicator" style="display:none;">
+                <span class="take-indicator-dot"></span>
+              </div>
+              <div id="agent-take-timeline" class="agent-take-timeline"></div>
             </div>
           </div>
 

@@ -17,6 +17,123 @@ const STORAGE_KEYS = {
   mediaProjectFilter: "director.mediaProjectFilter",
 };
 
+const MAX_TAKE_SCENES = 120;
+let takeSequence = 0;
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function classifyTakeKind(data) {
+  const type = (data?.type || "").toLowerCase();
+  const stage = (data?.stage || "").toLowerCase();
+  const message = (data?.message || "").toLowerCase();
+
+  if (type.includes("failed") || type.includes("error") || message.includes("blocked")) return "blocked";
+  if (type.includes("complete") || /test(s)?\s+pass/.test(message)) return "pass";
+  if (message.includes("warn")) return "warning";
+  if (type.includes("thinking") || stage.includes("planning") || type.includes("planning")) return "planning";
+  if (type.includes("shell") || type.includes("stdout") || type.includes("stderr")) return "shell";
+  return "shell";
+}
+
+function renderFilePath(pathValue) {
+  if (!pathValue) return "";
+  const clean = String(pathValue);
+  const parts = clean.split("/").filter(Boolean);
+  if (!parts.length) return `<div class="scene-path"><span class="scene-file-name">${escapeHtml(clean)}</span></div>`;
+  const file = parts[parts.length - 1];
+  const dir = clean.slice(0, clean.length - file.length);
+  return `<div class="scene-path"><span class="scene-file-dir">${escapeHtml(dir)}</span><span class="scene-file-name">${escapeHtml(file)}</span></div>`;
+}
+
+function renderDiff(diffText) {
+  if (!diffText) return "";
+  const lines = String(diffText).split("\n");
+  const rows = lines.map((line, index) => {
+    const trimmed = line.trimStart();
+    let cls = "";
+    if (trimmed.startsWith("+")) cls = " diff-line-add";
+    else if (trimmed.startsWith("-")) cls = " diff-line-del";
+    return `<div class="diff-line${cls}"><span class="diff-line-no">${index + 1}</span><span class="diff-line-txt">${escapeHtml(line)}</span></div>`;
+  }).join("");
+  return `<div class="scene-diff">${rows}</div>`;
+}
+
+function renderSceneBody(data) {
+  const message = data?.message ? `<pre class="scene-shell">${escapeHtml(data.message)}</pre>` : "";
+  const shellOutput = data?.shell_output ? `<pre class="scene-shell">${escapeHtml(data.shell_output)}</pre>` : "";
+  const testOutput = data?.test_results
+    ? `<pre class="scene-shell">${escapeHtml(typeof data.test_results === "string" ? data.test_results : JSON.stringify(data.test_results, null, 2))}</pre>`
+    : "";
+  const path = renderFilePath(data?.file_path || data?.path || data?.file);
+  const diff = renderDiff(data?.diff || data?.patch || data?.git_diff);
+
+  return `${path}${diff}${shellOutput}${testOutput}${message || (!path && !diff && !shellOutput && !testOutput ? `<pre class="scene-shell">${escapeHtml(JSON.stringify(data, null, 2))}</pre>` : "")}`;
+}
+
+function setTakeExecutionActive(isActive) {
+  const btn = document.getElementById("interrupt-btn");
+  if (btn) btn.style.display = isActive ? "inline-flex" : "none";
+}
+
+function updateTakeIndicator(sceneEl) {
+  const indicator = document.getElementById("take-indicator");
+  const timeline = document.getElementById("agent-take-timeline");
+  if (!indicator || !timeline || !sceneEl) return;
+  indicator.style.display = "block";
+  indicator.style.top = `${sceneEl.offsetTop + Math.max(10, sceneEl.offsetHeight * 0.5)}px`;
+}
+
+function resetAgentTakeTimeline() {
+  const timeline = document.getElementById("agent-take-timeline");
+  const indicator = document.getElementById("take-indicator");
+  const thinking = document.getElementById("agent-thinking");
+  if (timeline) timeline.innerHTML = "";
+  if (indicator) indicator.style.display = "none";
+  if (thinking) thinking.style.display = "none";
+  takeSequence = 0;
+}
+
+function appendAgentTakeScene(data) {
+  const timeline = document.getElementById("agent-take-timeline");
+  if (!timeline) return;
+
+  const kind = classifyTakeKind(data);
+  const details = document.createElement("details");
+  details.className = `scene-card scene-card--${kind}`;
+  details.dataset.sceneIndex = String(++takeSequence);
+
+  const when = new Date().toLocaleTimeString();
+  const title = escapeHtml(data?.stage || data?.type || "agent-step");
+  const subtitle = escapeHtml(data?.type || "event");
+  details.innerHTML = `
+    <summary>
+      <div class="scene-summary-main">
+        <span class="scene-title">${title}</span>
+        <span class="scene-kind">${subtitle}</span>
+      </div>
+      <span class="scene-time">${when}</span>
+    </summary>
+    <div class="scene-body">${renderSceneBody(data)}</div>
+  `;
+
+  timeline.appendChild(details);
+
+  while (timeline.children.length > MAX_TAKE_SCENES) {
+    timeline.removeChild(timeline.firstElementChild);
+  }
+
+  details.open = true;
+  updateTakeIndicator(details);
+  timeline.scrollTop = timeline.scrollHeight;
+}
+
 function persistContext() {
   if (selectedProjectId) {
     localStorage.setItem(STORAGE_KEYS.selectedProjectId, selectedProjectId);
@@ -294,19 +411,39 @@ async function loadRuns(projectId = null) {
     const active = runs.filter((r) => r.status === "running" || r.status === "awaiting_approval").length;
     document.getElementById("stat-runs").textContent = active;
 
+    // Update sidebar active-runs badge
+    const navBadge = document.getElementById("active-runs-badge");
+    if (navBadge) {
+      if (active > 0) {
+        navBadge.textContent = active;
+        navBadge.style.display = "inline-flex";
+      } else {
+        navBadge.style.display = "none";
+      }
+    }
+
     const list = document.getElementById("run-list");
     if (!filtered.length) {
-      list.innerHTML = '<p class="item-meta" style="padding:20px;text-align:center;">No productions yet for this scope.</p>';
+      list.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">🎬</div>
+          <p class="empty-title">No productions yet</p>
+          <p class="empty-sub">Go to Command Center and type a prompt to kick off your first AI video.</p>
+        </div>`;
       return;
     }
 
+    const statusIcon = { running: "🟢", awaiting_approval: "🟡", completed: "✅", failed: "🔴" };
     list.innerHTML = filtered.map((r) => `
       <div class="item run-item" data-id="${r.id}">
-        <div>
-          <span class="item-name">${(r.prompt || "Untitled").slice(0, 80)}</span><br>
-          <span class="item-meta">Status: ${r.status} · Stage: ${r.current_stage}</span>
+        <div class="run-item-main">
+          <span class="item-name">${(r.prompt || "Untitled").slice(0, 80)}</span>
+          <span class="run-status run-status--${r.status}">${statusIcon[r.status] || "⚪"} ${r.status.replace(/_/g, " ")}</span>
         </div>
-        <span class="item-meta">${new Date(r.created_at).toLocaleString()}</span>
+        <div class="run-item-meta">
+          <span class="item-meta">Stage: ${r.current_stage || "—"}</span>
+          <span class="item-meta">${new Date(r.created_at).toLocaleString()}</span>
+        </div>
       </div>
     `).join("");
 
@@ -332,18 +469,15 @@ function showPipeline(run) {
   document.getElementById("run-list").style.display = "none";
   document.getElementById("pipeline-view").style.display = "block";
   document.getElementById("output-view").style.display = "none";
-  document.getElementById("pipeline-run-id").textContent = run.id.slice(0, 8);
-  // Reset stages
-  document.querySelectorAll(".stage-node").forEach((s) => s.classList.remove("active", "completed", "failed"));
+  document.getElementById("pipeline-run-id").textContent = `Run ${run.id.slice(0, 8)}`;
+  resetAgentTakeTimeline();
+  setTakeExecutionActive(run.status === "running" || run.status === "awaiting_approval");
   // Hide video + results panels
   document.getElementById("preview-panel").style.display = "none";
   document.getElementById("video-panel").style.display = "none";
   document.getElementById("results-panel").style.display = "none";
   document.getElementById("preview-list").innerHTML = "";
   previewClips = [];
-  // Mark current
-  const cur = document.querySelector(`.stage-node[data-stage="${run.current_stage}"]`);
-  if (cur) cur.classList.add("active");
 }
 
 function appendPreviewClip(url, index, total) {
@@ -388,28 +522,17 @@ function appendPreviewClip(url, index, total) {
 
 function streamLogs(runId) {
   if (eventSource) eventSource.close();
-  const logEl = document.getElementById("log-output");
-  logEl.textContent = "";
+  resetAgentTakeTimeline();
+  setTakeExecutionActive(true);
   eventSource = new EventSource(`http://127.0.0.1:9420/api/events/stream/${runId}`);
   eventSource.onmessage = (e) => {
     const data = JSON.parse(e.data);
-    const ts = new Date().toLocaleTimeString();
 
-    if (data.type === "stage_thinking") {
-      logEl.textContent += `  ${data.message}\n`;
-    } else {
-      logEl.textContent += `${ts} [${data.type}] ${data.message || JSON.stringify(data)}\n`;
-    }
-    logEl.scrollTop = logEl.scrollHeight;
+    appendAgentTakeScene(data);
 
-    // Update pipeline stage indicators
-    if (data.type === "stage_start" && data.stage) {
-      const el = document.querySelector(`.stage-node[data-stage="${data.stage}"]`);
-      if (el) { el.classList.remove("completed", "failed"); el.classList.add("active"); }
-    }
-    if (data.type === "stage_complete" && data.stage) {
-      const el = document.querySelector(`.stage-node[data-stage="${data.stage}"]`);
-      if (el) { el.classList.remove("active"); el.classList.add("completed"); }
+    const thinking = document.getElementById("agent-thinking");
+    if (thinking) {
+      thinking.style.display = data.type === "stage_thinking" ? "inline-flex" : "none";
     }
 
     // Approval gate
@@ -425,17 +548,24 @@ function streamLogs(runId) {
     if (data.type === "run_completed") {
       toast("Production complete.", "success");
       eventSource.close();
+      setTakeExecutionActive(false);
+      if (thinking) thinking.style.display = "none";
       loadRunResults(runId);
       loadRuns(selectedProjectId);
     }
     if (data.type === "run_failed") {
       toast("Run failed: " + (data.error || "unknown"), "error");
       eventSource.close();
+      setTakeExecutionActive(false);
+      if (thinking) thinking.style.display = "none";
     }
   };
   eventSource.onerror = () => {
-    logEl.textContent += "[connection closed]\n";
+    appendAgentTakeScene({ type: "stream_closed", stage: "connection", message: "[connection closed]" });
     eventSource.close();
+    setTakeExecutionActive(false);
+    const thinking = document.getElementById("agent-thinking");
+    if (thinking) thinking.style.display = "none";
   };
 }
 
@@ -762,6 +892,57 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   document.getElementById("quick-max-scenes").addEventListener("input", (e) => {
     document.getElementById("quick-max-scenes-value").textContent = e.target.value;
+    updateCostHint();
+  });
+
+  function updateCostHint() {
+    const scenes = parseInt(document.getElementById("quick-max-scenes").value || "4", 10);
+    // Cost per clip by model (rough estimates)
+    const modelCosts = {
+      "fal-ai/wan/v2.2-a14b/text-to-video": 0.04,
+      "fal-ai/ltx-video/v0.9.1/text-to-video": 0.01,
+      "fal-ai/minimax/hailuo-02/standard/text-to-video": 0.45,
+      "fal-ai/kling-video/v2.5-turbo/pro/text-to-video": 0.32,
+    };
+    const modelEl = document.getElementById("setting-video-model");
+    const model = modelEl?.value || "fal-ai/wan/v2.2-a14b/text-to-video";
+    const costPer = modelCosts[model] ?? 0.04;
+    const total = (scenes * costPer).toFixed(2);
+    const modelLabel = modelEl?.options[modelEl.selectedIndex]?.text?.split("—")[0]?.trim() || "Wan 2.2";
+    const hint = document.getElementById("cost-hint");
+    if (hint) hint.textContent = `~$${total} estimated · ${scenes} scene${scenes !== 1 ? "s" : ""} · ${modelLabel}`;
+  }
+  updateCostHint();
+
+  // Back button in pipeline view
+  document.getElementById("btn-back-to-runs")?.addEventListener("click", () => {
+    if (eventSource) { eventSource.close(); eventSource = null; }
+    setTakeExecutionActive(false);
+    document.getElementById("pipeline-view").style.display = "none";
+    document.getElementById("output-view").style.display = "none";
+    document.getElementById("run-list").style.display = "";
+    loadRuns(selectedProjectId);
+  });
+
+  // Pause / interrupt button — calls backend cancel endpoint
+  document.getElementById("interrupt-btn")?.addEventListener("click", async () => {
+    if (!currentRunId) return;
+    const btn = document.getElementById("interrupt-btn");
+    btn.disabled = true;
+    btn.textContent = "Pausing…";
+    try {
+      await api("POST", `/api/runs/${currentRunId}/cancel`);
+      if (eventSource) { eventSource.close(); eventSource = null; }
+      setTakeExecutionActive(false);
+      toast("Run paused / cancelled.", "info");
+      appendAgentTakeScene({ type: "run_cancelled", stage: "interrupt", message: "Run cancelled by user." });
+      loadRuns(selectedProjectId);
+    } catch (e) {
+      toast("Failed to pause run: " + e, "error");
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = "⏸ Pause Run";
+    }
   });
   // When project selector changes to _new, trigger create
   document.getElementById("quick-project").addEventListener("change", async (e) => {
