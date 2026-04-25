@@ -61,13 +61,12 @@ jobs:
             exit 1
           fi
 
-          echo "Key preview:"
-          echo "$TAURI_SIGNING_PRIVATE_KEY" | head -n 1
-
-          if [[ "$TAURI_SIGNING_PRIVATE_KEY" != untrusted* ]]; then
-            echo "ERROR: Key does not look like a minisign/tauri v2 key"
-            exit 1
+            if [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
+              echo "Missing TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+              exit 1
           fi
+
+    echo "✅ Signing secrets are present (masked in logs by GitHub)"
 
       # -----------------------------
       # Build
