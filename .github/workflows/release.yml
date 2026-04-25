@@ -18,17 +18,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust (stable, aarch64)
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
 
-      - name: Rust + Cargo cache
+      - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "src-tauri -> target"
-          cache-on-failure: true
-          key: aarch64-apple-darwin
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@latest
 
       - name: Read version
         id: version
@@ -36,33 +45,87 @@ jobs:
           VERSION=$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Build & create draft release
-        uses: tauri-apps/tauri-action@v0.5.16
+      # DEBUG STEP 1: Check if secrets are set and what format they're in
+      - name: Debug - Verify signing secrets exist
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          echo "=== SIGNING DEBUG INFO ==="
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "❌ TAURI_SIGNING_PRIVATE_KEY is EMPTY - secret not set or wrong name"
+            exit 1
+          else
+            echo "✅ TAURI_SIGNING_PRIVATE_KEY is set"
+            echo "First line: $(echo "$TAURI_SIGNING_PRIVATE_KEY" | head -n1)"
+            echo "Total lines: $(echo "$TAURI_SIGNING_PRIVATE_KEY" | wc -l)"
+            echo "Total chars: ${#TAURI_SIGNING_PRIVATE_KEY}"
+            
+            # Check if it's base64 - if first line starts with dW50cnVzdGVk it's base64
+            FIRST_LINE=$(echo "$TAURI_SIGNING_PRIVATE_KEY" | head -n1)
+            if [[ "$FIRST_LINE" == dW50cnVzdGVk* ]]; then
+              echo "⚠️  WARNING: Key looks like BASE64 encoded. Tauri v2 wants raw key."
+              echo "Decode it and update the secret."
+            elif [[ "$FIRST_LINE" == "untrusted comment:"* ]]; then
+              echo "✅ Key appears to be in correct raw format"
+            else
+              echo "⚠️  Unknown key format. First line: $FIRST_LINE"
+            fi
+          fi
+          
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
+            echo "ℹ️  TAURI_SIGNING_PRIVATE_KEY_PASSWORD is empty - OK if key has no password"
+          else
+            echo "✅ TAURI_SIGNING_PRIVATE_KEY_PASSWORD is set"
+          fi
+          echo "=== END DEBUG INFO ==="
+
+      # DEBUG STEP 2: Check tauri.conf.json pubkey format
+      - name: Debug - Check pubkey in tauri.conf.json
+        run: |
+          echo "=== PUBKEY DEBUG ==="
+          PUBKEY=$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['plugins']['updater']['pubkey'])")
+          echo "Pubkey from config: $PUBKEY"
+          if [[ "$PUBKEY" == dW50cnVzdGVk* ]]; then
+            echo "⚠️  WARNING: Pubkey is BASE64 encoded. Decode it in tauri.conf.json"
+            echo "Decoded would be:"
+            echo "$PUBKEY" | base64 -d
+          elif [[ "$PUBKEY" == "untrusted comment:"* ]]; then
+            echo "✅ Pubkey appears to be in correct raw format"
+          fi
+          echo "=== END PUBKEY DEBUG ==="
+
+      - name: Build Tauri app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          echo "Starting build..."
+          cargo tauri build --target aarch64-apple-darwin
+          echo "Build command finished. Checking for signature..."
+          ls -la src-tauri/target/aarch64-apple-darwin/release/bundle/macos/
+
+      - name: Verify signature was created
+        run: |
+          SIG_FILE=$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.sig 2>/dev/null || true)
+          if [ -z "$SIG_FILE" ]; then
+            echo "❌ ERROR: No .sig file found! Signing failed."
+            exit 1
+          else
+            echo "✅ SUCCESS: Signature file created: $SIG_FILE"
+            echo "Signature content:"
+            cat "$SIG_FILE"
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
         with:
-          tagName: v${{ steps.version.outputs.version }}
-          releaseName: "Director's Cut v${{ steps.version.outputs.version }} — AI Video Production Studio"
-          releaseBody: |
-            ## Download & Install (macOS Apple Silicon)
-
-            1. Download `director-cut_${{ steps.version.outputs.version }}_aarch64.dmg` below
-            2. Open the `.dmg` → drag **Director's Cut** into Applications
-            3. Right-click → Open on first launch (bypasses Gatekeeper)
-
-            ---
-
-            ### Requirements
-            - macOS 12+ (Apple Silicon / M1+)
-            - Python 3.9+ (`xcode-select --install`)
-            - API Keys — prompted on first launch:
-              - [Groq API Key](https://console.groq.com) (free)
-              - [fal.ai API Key](https://fal.ai/dashboard) (~$0.04/clip)
-
-            ### First Launch
-            App auto-creates a Python environment on first run (~15 sec). After that, instant.
-          releaseDraft: true
-          prerelease: false
-          args: --target aarch64-apple-darwin
+          tag_name: v${{ steps.version.outputs.version }}
+          name: "Director's Cut v${{ steps.version.outputs.version }}"
+          draft: true
+          files: |
+            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.tar.gz
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.tar.gz.sig
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
