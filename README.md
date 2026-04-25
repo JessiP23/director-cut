@@ -259,3 +259,7 @@ MIT
 - cd src-tauri
 - cargo add tauri-plugin-updater
 - cargo add tauri-plugin-process
+
+
+## Build command
+- TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/director-cut.key)" cargo tauri build

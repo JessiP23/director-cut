@@ -1,87 +1,91 @@
-const { check } = window.__TAURI__.updater;
+const { getVersion, getName } = window.__TAURI__.app;
 const { ask, message } = window.__TAURI__.dialog;
 const { relaunch } = window.__TAURI__.process;
 
+// Dev detection: http: in dev, tauri: in prod
+const isDev = window.location.protocol === 'http:';
+
+const check = isDev
+ ? async () => {
+      console.log('[updater] DEV: Mocking check()');
+      await new Promise(r => setTimeout(r, 500));
+      return {
+        available: true,
+        version: "9.9.9",
+        currentVersion: await getVersion(),
+        body: "DEV MODE: Fake update\n\n- Test UI\n- Test download flow",
+        downloadAndInstall: async (progress) => {
+          for (let i = 0; i <= 100; i += 25) {
+            await new Promise(r => setTimeout(r, 150));
+            progress({ event: 'Progress', data: { chunkLength: i, contentLength: 100 } });
+          }
+          await message('DEV: Fake install done', { title: 'Dev Mode' });
+        }
+      };
+    }
+  : window.__TAURI__.updater.check;
+
 const updateButton = document.getElementById('update-button');
+const versionLabel = document.getElementById('backend-label');
 let latestUpdate = null;
 
-// Function to handle the actual download and install
 export async function installUpdate() {
-  if (!latestUpdate) {
-    console.error('installUpdate called but latestUpdate is null');
-    await message('No update available.', { title: 'Update', kind: 'info' });
-    updateButton.style.display = 'none';
-    return;
-  }
-
+  if (!latestUpdate) return;
   try {
-    const shouldUpdate = await ask(
-      `Update to version ${latestUpdate.version} is available! (Current: ${latestUpdate.currentVersion})\n\nRelease Notes:\n${latestUpdate.body || 'No release notes provided.'}\n\nDo you want to download and install the update now?`,
-      {
-        title: 'Update Available',
-        kind: 'info',
-        okLabel: 'Update Now',
-        cancelLabel: 'Later',
-      }
-    );
-
+    const shouldUpdate = await ask(`Update to v${latestUpdate.version}?`, {
+      title: 'Update Available',
+      kind: 'info',
+      okLabel: 'Update Now',
+      cancelLabel: 'Later',
+    });
     if (shouldUpdate) {
       updateButton.textContent = 'Downloading...';
       updateButton.disabled = true;
-      
-      // Hook progress if you want
-      await latestUpdate.downloadAndInstall((event) => {
-        if (event.event === 'Progress') {
-          const pct = Math.round((event.data.chunkLength / event.data.contentLength) * 100);
+      await latestUpdate.downloadAndInstall((e) => {
+        if (e.event === 'Progress') {
+          const pct = Math.round((e.data.chunkLength / e.data.contentLength) * 100);
           updateButton.textContent = `Downloading ${pct}%`;
         }
       });
-      
-      await message('Update installed! The application will now restart.', { title: 'Update Complete' });
-      await relaunch(); // This is why you need process:allow-restart
+      if (!isDev) await relaunch();
     }
   } catch (error) {
-    console.error('Error during update:', error);
-    await message(`Failed to install updates: ${error}`, { title: 'Update Error', kind: 'error' });
-    updateButton.style.display = 'none';
+    console.error('[updater] install failed:', error);
+    await message(`Update failed: ${error}`, { title: 'Error', kind: 'error' });
     updateButton.disabled = false;
     updateButton.textContent = 'Update New Version';
   }
 }
 
-// Function to check for updates on startup
 export async function initUpdater() {
-  if (!updateButton) {
-    console.warn("Update button not found");
-    return;
-  }
-  
-  // Hide by default
-  updateButton.style.display = 'none';
-  
   try {
-    console.log('Checking for updates...');
+    const [name, version] = await Promise.all([getName(), getVersion()]);
+    if (versionLabel) versionLabel.textContent = `${name} v${version}`;
+    console.log(`[updater] Running ${name} v${version} | DEV: ${isDev}`);
+  } catch (e) {
+    console.error('[updater] Failed to get version:', e);
+  }
+
+  if (!updateButton) return;
+  updateButton.style.display = 'none';
+
+  try {
+    console.log('[updater] Calling check()...');
     const update = await check();
-    console.log('Update check result:', update);
-    
+    console.log('[updater] check() result:', update);
+
     if (update?.available) {
       latestUpdate = update;
       updateButton.style.display = 'inline-block';
       updateButton.textContent = `Update to v${update.version}`;
-      console.log('Update available:', update.version);
-    } else {
-      console.log('No update available. Current:', update?.currentVersion);
-      updateButton.style.display = 'none';
+    } else if (update === null &&!isDev) {
+      console.log('[updater] check() = null. Check: signature, version, network, platform key');
     }
-  } catch (error) {
-    console.error('Error during update check:', error);
-    updateButton.style.display = 'none';
+  } catch (err) {
+    console.error('[updater] check() threw:', err);
   }
 }
 
-// Attach listener once DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
-  if (updateButton) {
-    updateButton.addEventListener('click', installUpdate);
-  }
+  if (updateButton) updateButton.addEventListener('click', installUpdate);
 });
