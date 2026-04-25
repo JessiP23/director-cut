@@ -7,8 +7,10 @@
     <title>Director's Cut</title>
     <script type="module" src="/main.js" defer></script>
     <script type="module">
-      import {checkForUpdatesAndInstall} from './updater.js';
-      document.getElementById('update-button').addEventListener('click', checkForUpdatesAndInstall);
+      import { initUpdater } from './updater.js';
+      document.addEventListener('DOMContentLoaded', () => {
+        initUpdater();
+      });
     </script>
   </head>
   <body>
@@ -24,10 +26,8 @@
         </div>
         <ul class="nav-links">
           <li><a href="#" data-page="dashboard" class="active">⌘ Command Center</a></li>
-          <button id="update-button" style="margin-left: 20px; padding: 10px 15px; background-color: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer;">Update New Version</button>
-          <li><a href="#" data-page="projects">Projects</a></li>
-          <li>
-            <a href="#" data-page="runs">Productions
+          <li><button id="update-button" style="display: none; margin-left: 20px; padding: 10px 15px; background-color: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer;">Update New Version</button></li>
+          <li><a href="#" data-page="runs">Productions
               <span id="active-runs-badge" class="nav-badge" style="display:none;"></span>
             </a>
           </li>
@@ -50,7 +50,7 @@
           <header class="page-header">
             <div>
               <h1>Command Center</h1>
-              <p class="page-subtitle">AI video production at your fingertip</p>
+              <p class="page-subtitle">An AI video production at your fingertip</p>
             </div>
           </header>
 
