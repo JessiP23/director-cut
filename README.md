@@ -254,3 +254,8 @@ MIT
 ## Generate update key pair
 
 - tauri signer generate
+
+## Generate plugins for updater and process
+- cd src-tauri
+- cargo add tauri-plugin-updater
+- cargo add tauri-plugin-process

@@ -6,6 +6,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Director's Cut</title>
     <script type="module" src="/main.js" defer></script>
+    <script type="module">
+      import {checkForUpdatesAndInstall} from './updater.js';
+      document.getElementById('update-button').addEventListener('click', checkForUpdatesAndInstall);
+    </script>
   </head>
   <body>
     <div id="app">
@@ -20,6 +24,7 @@
         </div>
         <ul class="nav-links">
           <li><a href="#" data-page="dashboard" class="active">⌘ Command Center</a></li>
+          <button id="update-button" style="margin-left: 20px; padding: 10px 15px; background-color: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer;">Update New Version</button>
           <li><a href="#" data-page="projects">Projects</a></li>
           <li>
             <a href="#" data-page="runs">Productions
@@ -45,7 +50,7 @@
           <header class="page-header">
             <div>
               <h1>Command Center</h1>
-              <p class="page-subtitle">AI video production at your fingertips</p>
+              <p class="page-subtitle">AI video production at your fingertip</p>
             </div>
           </header>
 

@@ -167,16 +167,18 @@ async fn api_request(
 // ---------------------------------------------------------------------------
 // App entry
 // ---------------------------------------------------------------------------
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let bd = resolve_backend_dir();
+    let bd = resolve_backend_dir(); // <-- You were missing () and ;
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             python_process: Mutex::new(None),
             backend_port: 9420,
-            backend_dir: Mutex::new(bd),
+            backend_dir: Mutex::new(bd), // <-- Now bd exists
         })
         .invoke_handler(tauri::generate_handler![
             start_backend,
