@@ -36,59 +36,64 @@ jobs:
         with:
           workspaces: "src-tauri -> target"
 
-      - name: Install Tauri CLI via Cargo
-        run: cargo install tauri-cli --version "^2.0" --locked
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --locked
 
+      # -----------------------------
+      # Version (no Python dependency)
+      # -----------------------------
       - name: Read version
         id: version
         run: |
-          VERSION=$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          VERSION=$(grep -m1 '"version"' src-tauri/tauri.conf.json | sed -E 's/.*"version": *"([^"]+)".*/\1/')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Debug - Verify signing secrets exist
+      # -----------------------------
+      # Signing env sanity check
+      # -----------------------------
+      - name: Validate signing secrets
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          echo "=== SIGNING DEBUG INFO ==="
           if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            echo "❌ TAURI_SIGNING_PRIVATE_KEY is EMPTY"
+            echo "Missing TAURI_SIGNING_PRIVATE_KEY"
             exit 1
-          else
-            echo "✅ TAURI_SIGNING_PRIVATE_KEY is set"
-            echo "First line: $(echo "$TAURI_SIGNING_PRIVATE_KEY" | head -n1)"
-            echo "Total lines: $(echo "$TAURI_SIGNING_PRIVATE_KEY" | wc -l)"
-            FIRST_LINE=$(echo "$TAURI_SIGNING_PRIVATE_KEY" | head -n1)
-            if [[ "$FIRST_LINE" == dW50cnVzdGVk* ]]; then
-              echo "⚠️  WARNING: Key is BASE64. Decode it first."
-              exit 1
-            elif [[ "$FIRST_LINE" == "untrusted comment:"* ]]; then
-              echo "✅ Key format looks correct"
-            fi
           fi
-          echo "=== END DEBUG INFO ==="
 
+          echo "Key preview:"
+          echo "$TAURI_SIGNING_PRIVATE_KEY" | head -n 1
+
+          if [[ "$TAURI_SIGNING_PRIVATE_KEY" != untrusted* ]]; then
+            echo "ERROR: Key does not look like a minisign/tauri v2 key"
+            exit 1
+          fi
+
+      # -----------------------------
+      # Build
+      # -----------------------------
       - name: Build Tauri app
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          echo "Starting build..."
           cargo tauri build --target aarch64-apple-darwin
-          echo "Build finished. Checking for signature..."
-          ls -la src-tauri/target/aarch64-apple-darwin/release/bundle/macos/
 
-      - name: Verify signature was created
+      # -----------------------------
+      # Verify outputs
+      # -----------------------------
+      - name: List artifacts
         run: |
-          SIG_FILE=$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.sig 2>/dev/null || true)
-          if [ -z "$SIG_FILE" ]; then
-            echo "❌ ERROR: No .sig file found! Signing failed."
-            exit 1
-          else
-            echo "✅ SUCCESS: Signature file created: $SIG_FILE"
-            cat "$SIG_FILE"
-          fi
+          ls -R src-tauri/target/aarch64-apple-darwin/release/bundle/
 
+      - name: Verify build outputs exist
+        run: |
+          test -d src-tauri/target/aarch64-apple-darwin/release/bundle/macos || exit 1
+          test -d src-tauri/target/aarch64-apple-darwin/release/bundle/dmg || exit 1
+
+      # -----------------------------
+      # Release
+      # -----------------------------
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -98,6 +103,6 @@ jobs:
           files: |
             src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
             src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.tar.gz
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.tar.gz.sig
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
