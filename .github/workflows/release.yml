@@ -73,11 +73,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Creating release for tag: ${{ steps.meta.outputs.tag }}"
-          git tag -l
-          gh release create "${{ steps.meta.outputs.tag }}" \
+          echo "Target commit: ${{ github.sha }}"
+          
+          # Do NOT pass the tag name as an argument
+          # gh will use the current tag ref + --target to associate correctly
+          gh release create \
             --draft \
             --title "Director's Cut ${{ steps.meta.outputs.tag }}" \
             --notes "Release ${{ steps.meta.outputs.tag }}" \
+            --target ${{ github.sha }} \
             src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg \
             src-tauri/target/aarch64-apple-darwin/release/bundle/macos/director-cut.app.tar.gz \
             src-tauri/target/aarch64-apple-darwin/release/bundle/macos/director-cut.app.tar.gz.sig
