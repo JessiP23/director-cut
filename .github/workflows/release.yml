@@ -77,7 +77,7 @@ jobs:
 
       - name: Generate updater JSON and update gist
         env:
-          GITHUB_PAT: ${{ secrets.GITHUB_PAT }}
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
         run: |
           SIGNATURE=$(cat src-tauri/target/aarch64-apple-darwin/release/bundle/macos/director-cut.app.tar.gz.sig)
           VERSION="${{ steps.meta.outputs.version }}"
@@ -109,6 +109,6 @@ jobs:
 
           curl -sS \
             -X PATCH \
-            -H "Authorization: token $GITHUB_PAT" \
+            -H "Authorization: token $RELEASE_PAT" \
             -d "$JSON_PAYLOAD" \
             "https://api.github.com/gists/f9c9818cbb6d8a28798e619fface794c"
