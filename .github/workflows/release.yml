@@ -5,6 +5,10 @@ on:
     tags:
       - "v*.*.*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.4.35)"
+        required: true
 
 permissions:
   contents: write
@@ -19,6 +23,37 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Resolve tag and version
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          # Ensure tag starts with v
+          if [[ ! "$TAG" =~ ^v ]]; then
+            echo "ERROR: Tag must start with 'v' (got: $TAG)"
+            exit 1
+          fi
+
+          VERSION="${TAG#v}"
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Resolved tag=$TAG version=$VERSION"
+
+      - name: Patch tauri.conf.json version
+        run: |
+          VERSION="${{ steps.meta.outputs.version }}"
+          # Update the version field in tauri.conf.json so the built binary
+          # matches the tag — Tauri's updater compares these.
+          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json \
+            > src-tauri/tauri.conf.json.tmp
+          mv src-tauri/tauri.conf.json.tmp src-tauri/tauri.conf.json
+          echo "tauri.conf.json version set to $VERSION"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -41,17 +76,6 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked
 
-      - name: Read tag and version
-        id: meta
-        run: |
-          echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
-          echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
-
-      - name: Fetch tags
-        run: |
-          git fetch --tags --force
-          git tag -l
-
       - name: Validate signing secrets
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -68,23 +92,55 @@ jobs:
         run: |
           cargo tauri build --target aarch64-apple-darwin
 
-      - name: Create release with GitHub CLI
+      - name: Verify build artifacts exist
+        run: |
+          TAG="${{ steps.meta.outputs.tag }}"
+          VERSION="${{ steps.meta.outputs.version }}"
+
+          DMG="src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/director-cut_${VERSION}_aarch64.dmg"
+          TAR="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/director-cut.app.tar.gz"
+          SIG="${TAR}.sig"
+
+          for f in "$DMG" "$TAR" "$SIG"; do
+            if [ ! -f "$f" ]; then
+              echo "ERROR: Missing artifact: $f"
+              exit 1
+            fi
+            echo "OK: $f"
+          done
+
+      - name: Create git tag (workflow_dispatch only)
+        if: github.event_name == 'workflow_dispatch'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Creating release for tag: ${{ steps.meta.outputs.tag }}"
-          echo "Target commit: ${{ github.sha }}"
-          
-          # Do NOT pass the tag name as an argument
-          # gh will use the current tag ref + --target to associate correctly
-          gh release create \
+          TAG="${{ steps.meta.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Create the tag pointing at the current commit if it doesn't exist
+          git tag "$TAG" || echo "Tag $TAG already exists, skipping"
+          git push origin "$TAG" || echo "Tag already pushed"
+
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.meta.outputs.tag }}"
+          VERSION="${{ steps.meta.outputs.version }}"
+          DMG="src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/director-cut_${VERSION}_aarch64.dmg"
+          TAR="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/director-cut.app.tar.gz"
+          SIG="${TAR}.sig"
+
+          gh release create "$TAG" \
             --draft \
-            --title "Director's Cut ${{ steps.meta.outputs.tag }}" \
-            --notes "Release ${{ steps.meta.outputs.tag }}" \
-            --target ${{ github.sha }} \
-            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg \
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/director-cut.app.tar.gz \
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/director-cut.app.tar.gz.sig
+            --title "Director's Cut $TAG" \
+            --notes "Release $TAG" \
+            --target "${{ github.sha }}" \
+            "$DMG" \
+            "$TAR" \
+            "$SIG"
+
+          echo "Release created: https://github.com/JessiP23/director-cut/releases/tag/$TAG"
 
       - name: Generate updater JSON and update gist
         env:
@@ -94,7 +150,7 @@ jobs:
           VERSION="${{ steps.meta.outputs.version }}"
           TAG="${{ steps.meta.outputs.tag }}"
           REPO="JessiP23/director-cut"
-          
+
           ASSET_URL="https://github.com/${REPO}/releases/download/${TAG}/director-cut.app.tar.gz"
 
           RELEASES_JSON=$(jq -n \
@@ -115,22 +171,24 @@ jobs:
               }
             }')
 
-          JSON_PAYLOAD=$(jq -n --arg content "$RELEASES_JSON" '{files: {"releases.json": {content: $content}}}')
+          JSON_PAYLOAD=$(jq -n --arg content "$RELEASES_JSON" \
+            '{files: {"releases.json": {content: $content}}}')
 
-          echo "Updating gist with payload:"
+          echo "Updating gist:"
           echo "$RELEASES_JSON" | jq .
-          
+
           RESPONSE=$(curl -sS -w "\n%{http_code}" \
             -X PATCH \
             -H "Authorization: token $RELEASE_PAT" \
+            -H "Content-Type: application/json" \
             -d "$JSON_PAYLOAD" \
             "https://api.github.com/gists/f9c9818cbb6d8a28798e619fface794c")
-          
+
           HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
           BODY=$(echo "$RESPONSE" | sed '$d')
-          
+
           if [ "$HTTP_CODE" -ne 200 ]; then
-            echo "Gist update failed with code $HTTP_CODE"
+            echo "ERROR: Gist update failed ($HTTP_CODE)"
             echo "$BODY"
             exit 1
           fi
