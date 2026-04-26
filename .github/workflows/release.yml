@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -45,6 +47,11 @@ jobs:
           echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
           echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
 
+      - name: Fetch tags
+        run: |
+          git fetch --tags --force
+          git tag -l
+
       - name: Validate signing secrets
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -65,8 +72,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # This will fail if the tag doesn't exist, which is what we want
-          # No more untagged bullshit
+          echo "Creating release for tag: ${{ steps.meta.outputs.tag }}"
+          git tag -l
           gh release create "${{ steps.meta.outputs.tag }}" \
             --draft \
             --title "Director's Cut ${{ steps.meta.outputs.tag }}" \
@@ -84,7 +91,6 @@ jobs:
           TAG="${{ steps.meta.outputs.tag }}"
           REPO="JessiP23/director-cut"
           
-          # This URL format is guaranteed by GitHub. No API calls needed.
           ASSET_URL="https://github.com/${REPO}/releases/download/${TAG}/director-cut.app.tar.gz"
 
           RELEASES_JSON=$(jq -n \
@@ -107,8 +113,21 @@ jobs:
 
           JSON_PAYLOAD=$(jq -n --arg content "$RELEASES_JSON" '{files: {"releases.json": {content: $content}}}')
 
-          curl -sS \
+          echo "Updating gist with payload:"
+          echo "$RELEASES_JSON" | jq .
+          
+          RESPONSE=$(curl -sS -w "\n%{http_code}" \
             -X PATCH \
             -H "Authorization: token $RELEASE_PAT" \
             -d "$JSON_PAYLOAD" \
-            "https://api.github.com/gists/f9c9818cbb6d8a28798e619fface794c"
+            "https://api.github.com/gists/f9c9818cbb6d8a28798e619fface794c")
+          
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "Gist update failed with code $HTTP_CODE"
+            echo "$BODY"
+            exit 1
+          fi
+          echo "✅ Gist updated successfully"
