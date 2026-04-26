@@ -132,7 +132,6 @@ jobs:
           SIG="${TAR}.sig"
 
           gh release create "$TAG" \
-            --draft \
             --title "Director's Cut $TAG" \
             --notes "Release $TAG" \
             --target "${{ github.sha }}" \
