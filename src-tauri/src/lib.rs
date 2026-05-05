@@ -259,6 +259,21 @@ fn start_backend(state: State<AppState>) -> Result<BackendStatus, String> {
         cmd.env("FAL_KEY", k);
         cmd.env("FAL_API_KEY", k);
     }
+    if let Some(k) = option_env!("DIRECTOR_EMBED_SUPABASE_URL").filter(|s| !s.is_empty()) {
+        cmd.env("SUPABASE_URL", k);
+        cmd.env("NEXT_PUBLIC_SUPABASE_URL", k); // in case python reads this name
+    }
+    if let Some(k) = option_env!("DIRECTOR_EMBED_SUPABASE_ANON_KEY").filter(|s| !s.is_empty()) {
+        cmd.env("SUPABASE_ANON_KEY", k);
+        cmd.env("NEXT_PUBLIC_SUPABASE_ANON_KEY", k);
+    }
+    if let Some(k) = option_env!("DIRECTOR_EMBED_SUPABASE_URL").filter(|s|!s.is_empty()) {
+        eprintln!("[director-cut] RUST BAKED URL: {}", k);
+        cmd.env("SUPABASE_URL", k);
+        cmd.env("NEXT_PUBLIC_SUPABASE_URL", k);
+    } else {
+        eprintln!("[director-cut] RUST URL NOT BAKED");
+    }
     eprintln!(
         "[director-cut] uvicorn cwd={} bin={:?}",
         backend_dir.display(),

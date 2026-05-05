@@ -21,14 +21,15 @@ def _record_try(p: Path) -> None:
 
 
 def _apply_env_lines(text: str) -> None:
-    """Merge keys so later-loaded files override earlier (standard dotenv behavior)."""
+    """Merge keys so later-loaded files override earlier, but don't overwrite existing env."""
     for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, val = line.partition("=")
         k, v = key.strip(), val.strip()
-        os.environ[k] = v
+        if k and k not in os.environ:
+            os.environ[k] = v
 
 def load_layered_env_once() -> None:
     ENV_FILES_TRIED.clear()
@@ -71,6 +72,8 @@ def load_layered_env_once() -> None:
 
 
 load_layered_env_once()
+import sys
+print(f"[DIRECTOR_PYTHON] SUPABASE_URL from env: {os.getenv('NEXT_PUBLIC_SUPABASE_URL')}", file=sys.stderr, flush=True)
 
 from fastapi import FastAPI, Request, HTTPException  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
