@@ -5,6 +5,9 @@ if [[ -f .env ]]; then
   source .env
   echo "Debug: .env sourced."
   export TAURI_SIGNING_PRIVATE_KEY
+  # Optional: bake API keys into the bundle (rustc compile-time embed for the Python subprocess):
+  # DIRECTOR_EMBED_GROQ_API_KEY=... DIRECTOR_EMBED_FAL_KEY=...
+  export DIRECTOR_EMBED_GROQ_API_KEY DIRECTOR_EMBED_FAL_KEY
 else
   echo "Debug: .env file not found."
 fi

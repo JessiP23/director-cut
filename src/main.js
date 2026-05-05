@@ -1,9 +1,15 @@
 /**
  * Director's Cut – Frontend application v2
+ * WM Studio auth: Supabase-js (same project as wm.studio web app).
  */
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+
 const { invoke } = window.__TAURI__.core;
 
 let backendRunning = false;
+let sb = null;
+let authCfg = {};
+let authorizationHeader = null;
 let currentRunId = null;
 let eventSource = null;
 let selectedProjectId = null;
@@ -16,6 +22,17 @@ const STORAGE_KEYS = {
   selectedProjectId: "director.selectedProjectId",
   mediaProjectFilter: "director.mediaProjectFilter",
 };
+
+function pickPersistedNonSecretSettings(settingsPayload) {
+  if (!settingsPayload || typeof settingsPayload !== "object") return {};
+  const keys = ["video_model", "model", "ffmpeg_path"];
+  const o = {};
+  for (const k of keys) {
+    const v = settingsPayload[k];
+    if (v != null && String(v).trim() !== "") o[k] = v;
+  }
+  return o;
+}
 
 const MAX_TAKE_SCENES = 120;
 let takeSequence = 0;
@@ -179,17 +196,232 @@ function toast(msg, type = "info") {
   setTimeout(() => { el.style.opacity = "0"; setTimeout(() => el.remove(), 300); }, 4000);
 }
 
-// --- API helper ---
+// --- Backend auth / API ---
+async function rawApi(method, path, body, bearer) {
+  const raw = await invoke("api_request", {
+    method,
+    path,
+    body: body ? JSON.stringify(body) : null,
+    authorization: bearer && bearer.trim() ? bearer : null,
+  });
+  return JSON.parse(raw);
+}
+
 async function api(method, path, body) {
   try {
-    const raw = await invoke("api_request", { method, path, body: body ? JSON.stringify(body) : null });
-    return JSON.parse(raw);
+    return await rawApi(method, path, body, authorizationHeader);
   } catch (e) {
+    if (authorizationHeader && sb && String(e).includes("401")) {
+      try {
+        const { data, error } = await sb.auth.refreshSession();
+        if (!error && data.session) await applyDirectorSession(data.session);
+        return await rawApi(method, path, body, authorizationHeader);
+      } catch (_) { /* fallback */ }
+    }
     console.error(`API ${method} ${path} failed:`, e);
     toast(`API error: ${e}`, "error");
     throw e;
   }
 }
+
+function sseAccessToken() {
+  if (!authorizationHeader || !authorizationHeader.startsWith("Bearer ")) return "";
+  return authorizationHeader.slice(7).trim();
+}
+
+function setAuthChromeVisible(signedIn) {
+  const wall = document.getElementById("auth-wall");
+  if (!wall) return;
+  wall.style.display = signedIn ? "none" : "flex";
+}
+
+function authError(text) {
+  const el = document.getElementById("auth-error");
+  if (!el) return;
+  el.style.display = text ? "block" : "none";
+  el.textContent = text || "";
+}
+
+async function refreshAppShell() {
+  try {
+    await loadProjects();
+    await loadRuns();
+    await loadMediaLibrary();
+    await loadSettings();
+  } catch {
+    /* ignore */
+  }
+}
+
+async function applyDirectorSession(session) {
+  if (!session?.access_token) {
+    authorizationHeader = null;
+    const emailEl = document.getElementById("sidebar-user-email");
+    if (emailEl) emailEl.textContent = "";
+    setAuthChromeVisible(false);
+    return;
+  }
+  authorizationHeader = `Bearer ${session.access_token}`;
+  const emailEl = document.getElementById("sidebar-user-email");
+  if (emailEl) emailEl.textContent = session.user?.email || session.user?.id || "Signed in";
+  setAuthChromeVisible(true);
+  await refreshAppShell();
+}
+
+async function bootstrapBackendAndAuthConfig() {
+  try {
+    await invoke("stop_backend");
+  } catch (_) { /* noop */ }
+  backendRunning = false;
+  document.getElementById("backend-status-dot")?.classList.remove("online");
+  document.getElementById("backend-label").textContent = "Starting…";
+  try {
+    await invoke("start_backend");
+  } catch (e) {
+    console.error("[DIRECTOR_BOOT] start_backend failed:", e);
+    document.getElementById("backend-label").textContent = "Start Engine";
+    toast(`Backend failed to start: ${e}`, "error");
+    return;
+  }
+  backendRunning = true;
+  document.getElementById("backend-status-dot")?.classList.add("online");
+  document.getElementById("backend-label").textContent = "Engine Running";
+  await new Promise((r) => setTimeout(r, 900));
+  const cfg = await rawApi("GET", "/api/auth/config", null, null);
+  authCfg = cfg;
+  console.log(
+    `[DIRECTOR_BOOT] /api/auth/config wmstudio_origin="${cfg.wmstudio_origin || ""}" (empty=${!cfg.wmstudio_origin}) oauth=${cfg.oauth_redirect} supabase_ok=${Boolean(cfg.supabase_url && cfg.supabase_anon_key)} locale=${cfg.locale} tried_files=${(cfg.env_files_tried || []).length}`,
+  );
+
+  const bh = document.getElementById("auth-backend-hint");
+  if (bh) {
+    if (!cfg.supabase_url || !cfg.supabase_anon_key) {
+      bh.style.display = "block";
+      bh.textContent = cfg.hint || "Supabase keys missing — see backend logs env_files_tried.";
+    } else bh.style.display = "none";
+  }
+  if (!cfg.supabase_url || !cfg.supabase_anon_key) {
+    sb = null;
+    setAuthChromeVisible(false);
+    authError("");
+    return;
+  }
+  sb = createClient(cfg.supabase_url, cfg.supabase_anon_key, {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: false,
+      flowType: "pkce",
+    },
+  });
+  sb.auth.onAuthStateChange(async (_evt, session) => {
+    await applyDirectorSession(session);
+  });
+  const { data } = await sb.auth.getSession();
+  await applyDirectorSession(data.session);
+}
+
+async function pollDesktopOAuthBridge() {
+  const deadline = Date.now() + 180_000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 1200));
+    try {
+      const raw = await invoke("api_request", {
+        method: "GET",
+        path: "/api/auth/desktop-oauth-bridge",
+        body: null,
+        authorization: null,
+      });
+      const j = JSON.parse(raw);
+      if (j?.access_token && j?.refresh_token) {
+        const { error } = await sb.auth.setSession({
+          access_token: j.access_token,
+          refresh_token: j.refresh_token,
+        });
+        if (error) {
+          authError(error.message || "Could not attach session.");
+          return false;
+        }
+        authError("");
+        return true;
+      }
+    } catch {
+      /* backend still starting */
+    }
+  }
+  return false;
+}
+
+async function runOAuth(provider) {
+  if (!sb) {
+    authError("Supabase client not ready.");
+    return;
+  }
+  authError("");
+  let j;
+  try {
+    const raw = await invoke("api_request", {
+      method: "GET",
+      path: `/api/auth/oauth/start?provider=${encodeURIComponent(provider)}`,
+      body: null,
+      authorization: null,
+    });
+    j = JSON.parse(raw);
+  } catch (e) {
+    authError(String(e));
+    return;
+  }
+  if (!j?.url) {
+    const detail = j?.detail != null ? (Array.isArray(j.detail) ? j.detail.join(" ") : String(j.detail)) : "";
+    authError(detail || "No OAuth URL from Director backend.");
+    return;
+  }
+  try {
+    await invoke("open_external_url", { url: j.url });
+  } catch (e) {
+    authError(String(e));
+    return;
+  }
+  toast("Complete sign-in in your browser — this window will continue automatically.", "info");
+  const ok = await pollDesktopOAuthBridge();
+  if (!ok) {
+    authError("Sign-in timed out. Complete the browser flow sooner, then try again.");
+    return;
+  }
+  toast("Signed in.", "success");
+}
+
+async function openWmStudioAuthInBrowser() {
+  authError("");
+  const base = (authCfg.wmstudio_origin || "").replace(/\/$/, "");
+  const loc = authCfg.locale || "en";
+  if (!base) {
+    authError("Set NEXT_PUBLIC_APP_URL in .env.");
+    return;
+  }
+  const url = `${base}/${encodeURIComponent(loc)}/auth?director=1`;
+  try {
+    await invoke("open_external_url", { url });
+    toast("Sign in at wmstudio if prompted, then we will connect Director on this Mac.", "info");
+  } catch (e) {
+    authError(String(e));
+    return;
+  }
+  const ok = await pollDesktopOAuthBridge();
+  if (!ok) authError("No session linked. Sign in at wmstudio, wait for the localhost page, then return here.");
+}
+
+window.addEventListener("message", async (ev) => {
+  if (!ev?.data || ev.data.type !== "director_wmstudio_session") return;
+  const s = ev.data.session;
+  if (!sb || !s?.access_token || !s?.refresh_token) return;
+  authError("");
+  const { error } = await sb.auth.setSession({
+    access_token: s.access_token,
+    refresh_token: s.refresh_token,
+  });
+  if (error) authError(error.message || "Could not attach session.");
+});
 
 // --- Navigation ---
 function navigateTo(page) {
@@ -381,7 +613,7 @@ async function startQuickRun(prompt) {
 
     const quickMaxScenes = parseInt(document.getElementById("quick-max-scenes")?.value || "4", 10);
     const runSettings = {
-      ...persistedSettings,
+      ...pickPersistedNonSecretSettings(persistedSettings),
       max_scenes: Number.isFinite(quickMaxScenes) ? quickMaxScenes : 4,
     };
 
@@ -524,7 +756,9 @@ function streamLogs(runId) {
   if (eventSource) eventSource.close();
   resetAgentTakeTimeline();
   setTakeExecutionActive(true);
-  eventSource = new EventSource(`http://127.0.0.1:9420/api/events/stream/${runId}`);
+  const _tk = sseAccessToken();
+  const _q = _tk ? `?access_token=${encodeURIComponent(_tk)}` : "";
+  eventSource = new EventSource(`http://127.0.0.1:9420/api/events/stream/${runId}${_q}`);
   eventSource.onmessage = (e) => {
     const data = JSON.parse(e.data);
 
@@ -805,8 +1039,6 @@ async function submitApproval(runId, stage, decision) {
 async function loadSettings() {
   try {
     const s = await api("GET", "/api/settings");
-    if (s.groq_api_key) document.getElementById("setting-groq-key").value = s.groq_api_key;
-    if (s.fal_api_key) document.getElementById("setting-fal-key").value = s.fal_api_key;
     if (s.video_model) document.getElementById("setting-video-model").value = s.video_model;
     if (s.model) document.getElementById("setting-model").value = s.model;
     if (s.ffmpeg_path) document.getElementById("setting-ffmpeg").value = s.ffmpeg_path;
@@ -819,45 +1051,12 @@ async function loadSettings() {
 async function saveSettings(e) {
   e.preventDefault();
   await api("PUT", "/api/settings", {
-    groq_api_key: document.getElementById("setting-groq-key").value,
-    fal_api_key: document.getElementById("setting-fal-key").value,
     video_model: document.getElementById("setting-video-model").value,
     model: document.getElementById("setting-model").value,
     ffmpeg_path: document.getElementById("setting-ffmpeg").value,
     max_scenes: parseInt(document.getElementById("setting-max-scenes").value || "4", 10),
   });
   toast("Settings saved!", "success");
-}
-
-// --- Onboarding ---
-function showOnboarding(existingSettings = {}) {
-  const overlay = document.getElementById("onboarding-overlay");
-  const groqInput = document.getElementById("onboard-groq-key");
-  const falInput = document.getElementById("onboard-fal-key");
-  groqInput.value = existingSettings.groq_api_key || "";
-  falInput.value = existingSettings.fal_api_key || "";
-  overlay.style.display = "flex";
-
-  document.getElementById("onboard-save-btn").onclick = async () => {
-    const groq = groqInput.value.trim();
-    const fal = falInput.value.trim();
-    if (!groq) { toast("Groq API key is required", "error"); groqInput.focus(); return; }
-    if (!fal) { toast("fal.ai API key is required", "error"); falInput.focus(); return; }
-    try {
-      await api("PUT", "/api/settings", {
-        groq_api_key: groq,
-        fal_api_key: fal,
-        video_model: "fal-ai/wan/v2.2-a14b/text-to-video",
-        model: "llama-3.3-70b-versatile",
-        max_scenes: 4,
-      });
-      overlay.style.display = "none";
-      toast("You're all set! Start your first production.", "success");
-      loadSettings();
-    } catch (e) {
-      toast("Failed to save: " + e, "error");
-    }
-  };
 }
 
 // --- Init ---
@@ -982,33 +1181,35 @@ window.addEventListener("DOMContentLoaded", () => {
   }
   restoreContext();
   refreshScopeBadges();
-  // Auto-start backend engine
+  document.getElementById("btn-auth-google")?.addEventListener("click", () => runOAuth("google"));
+  document.getElementById("btn-auth-github")?.addEventListener("click", () => runOAuth("github"));
+  document.getElementById("btn-auth-apple")?.addEventListener("click", () => runOAuth("apple"));
+  document.getElementById("btn-open-wm-auth")?.addEventListener("click", () => {
+    openWmStudioAuthInBrowser().catch((e) => console.error(e));
+  });
+  document.getElementById("btn-email-signin")?.addEventListener("click", async () => {
+    authError("");
+    if (!sb) {
+      authError("Supabase client not ready.");
+      return;
+    }
+    const email = document.getElementById("auth-email").value.trim();
+    const password = document.getElementById("auth-password").value;
+    const { error } = await sb.auth.signInWithPassword({ email, password });
+    if (error) authError(error.message || "Sign in failed.");
+  });
+  document.getElementById("btn-sign-out")?.addEventListener("click", async () => {
+    if (sb) await sb.auth.signOut();
+    await applyDirectorSession(null);
+  });
+
   (async () => {
     try {
-      await checkBackendHealth();
-      if (!backendRunning) {
-        await invoke("start_backend");
-        backendRunning = true;
-        document.getElementById("backend-status-dot").classList.add("online");
-        document.getElementById("backend-label").textContent = "Engine Running";
-      }
-      // Wait a moment for backend to be ready, then check onboarding
-      await new Promise(r => setTimeout(r, 1500));
-      try {
-        const settings = await api("GET", "/api/settings");
-        const hasGroq = settings.groq_api_key && String(settings.groq_api_key).startsWith("gsk_");
-        const hasFal = settings.fal_api_key && String(settings.fal_api_key).length > 10;
-        if (!hasGroq || !hasFal) {
-          showOnboarding(settings);
-        }
-      } catch { /* backend not ready yet, skip onboarding check */ }
+      await bootstrapBackendAndAuthConfig();
     } catch (e) {
-      console.error("Auto-start backend failed:", e);
+      console.error("Backend/auth bootstrap failed:", e);
     }
   })();
-  loadProjects();
-  loadRuns();
-  loadMediaLibrary();
   // Keyboard shortcuts
   document.addEventListener("keydown", (e) => {
     if (e.metaKey || e.ctrlKey) {

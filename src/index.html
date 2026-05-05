@@ -14,6 +14,33 @@
     </script>
   </head>
   <body>
+    <!-- WM Studio sign-in (Supabase Auth — mirrors web app IDs / providers) -->
+    <div id="auth-wall" class="modal-overlay" style="display:flex; z-index: 50;">
+      <div class="modal-card glass-card" style="max-width:460px;width:calc(100% - 48px);">
+        <div style="text-align:center;margin-bottom:16px;">
+          <img src="/assets/logo.png" alt="" style="height:52px;margin-bottom:8px;" />
+          <h2 style="margin:0;font-size:1.35rem;">Welcome back</h2>
+          <p id="auth-subcopy" class="page-subtitle" style="margin:8px 0 4px;line-height:1.45;">Sign in to your WM Studio account to continue</p>
+          <p id="auth-backend-hint" class="item-meta" style="margin-top:12px;display:none;line-height:1.45;"></p>
+        </div>
+        <div id="auth-error" class="item-meta" style="color:#f87171;display:none;margin-bottom:10px;"></div>
+        <div class="form-group" style="gap:10px;display:flex;flex-direction:column;">
+          <button type="button" id="btn-auth-google" class="btn btn-primary" style="width:100%;">Continue with Google</button>
+          <button type="button" id="btn-auth-github" class="btn btn-outline" style="width:100%;">Continue with GitHub</button>
+        </div>
+        <p class="item-meta" style="text-align:center;margin:14px 0 6px;">or use email</p>
+        <div class="form-group">
+          <label for="auth-email">Email</label>
+          <input id="auth-email" type="email" autocomplete="username" placeholder="name@example.com" />
+        </div>
+        <div class="form-group">
+          <label for="auth-password">Password</label>
+          <input id="auth-password" type="password" autocomplete="current-password" placeholder="Enter your password" />
+        </div>
+        <button type="button" id="btn-email-signin" class="btn btn-glow" style="width:100%;margin-top:4px;"><span>Sign In with Email</span></button>
+      </div>
+    </div>
+
     <div id="app">
       <!-- Sidebar -->
       <nav id="sidebar">
@@ -35,6 +62,10 @@
           <li><a href="#" data-page="settings">Settings</a></li>
         </ul>
         <div class="sidebar-footer">
+          <div style="margin-bottom:10px;padding:0 8px;">
+            <span id="sidebar-user-email" class="item-meta" style="display:block;word-break:break-all;"></span>
+            <button type="button" id="btn-sign-out" class="btn btn-outline" style="margin-top:8px;width:100%;">Sign Out</button>
+          </div>
           <div class="engine-status">
             <span class="pulse-dot" id="backend-status-dot"></span>
             <span id="backend-label">Starting…</span>
@@ -72,7 +103,7 @@
           <div class="hero-card glass-card">
             <div class="hero-header">
               <h3>New Production</h3>
-              <span class="hero-hint">Powered by fal.ai and ()Groq</span>
+              <span class="hero-hint">Powered by fal.ai and Groq · keys from WM Studio</span>
             </div>
             <p class="hero-desc">Describe your video idea and let the AI pipeline handle the rest — research, scripting, storyboarding, rendering, all automated.</p>
             <form id="quick-start-form" class="quick-start">
@@ -207,21 +238,12 @@
         <!-- ─── Settings ─── -->
         <section id="page-settings" class="page">
           <header class="page-header">
-            <div><h1>Settings</h1><p class="page-subtitle">Configure your studio</p></div>
+            <div><h1>Settings</h1><p class="page-subtitle">Pipeline preferences (Groq/fal credentials come from WM Studio env)</p></div>
           </header>
           <div class="settings-grid">
             <div class="glass-card settings-section">
-              <h4>API Keys</h4>
               <form id="settings-form">
-                <div class="form-group">
-                  <label for="setting-groq-key">Groq API Key <span class="label-hint">(free at console.groq.com)</span></label>
-                  <input id="setting-groq-key" type="password" placeholder="gsk_…" />
-                </div>
-                <div class="form-group">
-                  <label for="setting-fal-key">fal.ai API Key <span class="label-hint">(video generation — fal.ai/dashboard)</span></label>
-                  <input id="setting-fal-key" type="password" placeholder="34f025b0-…" />
-                </div>
-                <h4 style="margin-top:20px;">Video Generation</h4>
+                <h4>Video Generation</h4>
                 <div class="form-group">
                   <label for="setting-video-model">Video Model</label>
                   <select id="setting-video-model">
@@ -251,26 +273,6 @@
         </section>
 
       </main>
-    </div>
-
-    <!-- ─── Onboarding Modal ─── -->
-    <div id="onboarding-overlay" class="modal-overlay" style="display:none;">
-      <div class="modal-card glass-card" style="max-width:480px;">
-        <h2 style="margin-bottom:4px;">Welcome to Director's Cut</h2>
-        <p class="page-subtitle" style="margin-bottom:20px;">AI-powered video production. Let's get you set up.</p>
-        <div class="form-group">
-          <label for="onboard-groq-key">Groq API Key <span class="label-hint">(free — <a href="https://console.groq.com" target="_blank" style="color:var(--accent);">get one</a>)</span></label>
-          <input id="onboard-groq-key" type="password" placeholder="gsk_…" />
-        </div>
-        <div class="form-group">
-          <label for="onboard-fal-key">fal.ai API Key <span class="label-hint">(video generation — <a href="https://fal.ai/dashboard" target="_blank" style="color:var(--accent);">get one</a>)</span></label>
-          <input id="onboard-fal-key" type="password" placeholder="34f025b0-…" />
-        </div>
-        <button id="onboard-save-btn" class="btn btn-glow" style="width:100%;margin-top:8px;">
-          <span>Get Started</span><span class="btn-arrow">→</span>
-        </button>
-        <p class="item-meta" style="text-align:center;margin-top:12px;">You can change these later in Settings.</p>
-      </div>
     </div>
 
     <!-- ─── New Project Modal ─── -->
