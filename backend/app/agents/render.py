@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 from pathlib import Path
 from typing import List
 
 import httpx
 
 from app.agents.base import checkpoint, record_step, emit_progress, think
+from app.services.ffmpeg import find_ffmpeg_binary
 from app.schemas.run import Stage
 from app.runtime.event_bus import event_bus
 
@@ -37,15 +37,7 @@ FAL_TIMEOUT = 600        # max wait per clip (10 min)
 # ── FFmpeg discovery ────────────────────────────────────────────────────────
 
 def _find_ffmpeg() -> str:
-    custom = os.getenv("FFMPEG_PATH", "").strip()
-    if custom and shutil.which(custom):
-        return custom
-    for candidate in ("ffmpeg", "/usr/local/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"):
-        if shutil.which(candidate):
-            return candidate
-    raise FileNotFoundError(
-        "FFmpeg not found. Install it (brew install ffmpeg) or set FFMPEG_PATH."
-    )
+    return find_ffmpeg_binary()
 
 
 # ── fal.ai helpers ──────────────────────────────────────────────────────────

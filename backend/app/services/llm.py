@@ -31,8 +31,8 @@ def _resolve_provider(settings: dict) -> tuple:
     groq_key = (settings.get("groq_api_key") or os.getenv("GROQ_API_KEY") or "").strip()
     if groq_key:
         p = PROVIDERS["groq"]
-        model = settings.get("model") or os.getenv("DIRECTOR_MODEL") or p["default_model"]
-        # Groq only supports its own models — remap if user has an openai/ model set
+        model = os.getenv("DIRECTOR_MODEL") or p["default_model"]
+        # Groq only supports its own models — remap if env points at OpenRouter-style id
         if "/" in model:
             model = p["default_model"]
         return p["url"], groq_key, model
@@ -41,7 +41,7 @@ def _resolve_provider(settings: dict) -> tuple:
     or_key = (settings.get("openrouter_api_key") or os.getenv("OPENROUTER_API_KEY") or "").strip()
     if or_key:
         p = PROVIDERS["openrouter"]
-        model = settings.get("model") or os.getenv("DIRECTOR_MODEL") or p["default_model"]
+        model = os.getenv("DIRECTOR_MODEL") or p["default_model"]
         return p["url"], or_key, model
 
     return None, None, None

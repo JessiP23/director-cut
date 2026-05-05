@@ -25,7 +25,7 @@ const STORAGE_KEYS = {
 
 function pickPersistedNonSecretSettings(settingsPayload) {
   if (!settingsPayload || typeof settingsPayload !== "object") return {};
-  const keys = ["video_model", "model", "ffmpeg_path"];
+  const keys = ["video_model"];
   const o = {};
   for (const k of keys) {
     const v = settingsPayload[k];
@@ -1040,8 +1040,6 @@ async function loadSettings() {
   try {
     const s = await api("GET", "/api/settings");
     if (s.video_model) document.getElementById("setting-video-model").value = s.video_model;
-    if (s.model) document.getElementById("setting-model").value = s.model;
-    if (s.ffmpeg_path) document.getElementById("setting-ffmpeg").value = s.ffmpeg_path;
     document.getElementById("setting-max-scenes").value = s.max_scenes ?? 4;
     document.getElementById("quick-max-scenes").value = s.max_scenes ?? 4;
     document.getElementById("quick-max-scenes-value").textContent = String(s.max_scenes ?? 4);
@@ -1052,8 +1050,6 @@ async function saveSettings(e) {
   e.preventDefault();
   await api("PUT", "/api/settings", {
     video_model: document.getElementById("setting-video-model").value,
-    model: document.getElementById("setting-model").value,
-    ffmpeg_path: document.getElementById("setting-ffmpeg").value,
     max_scenes: parseInt(document.getElementById("setting-max-scenes").value || "4", 10),
   });
   toast("Settings saved!", "success");

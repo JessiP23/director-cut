@@ -492,8 +492,6 @@ async def startup():
             "groq_api_key": "GROQ_API_KEY",
             "fal_api_key": "FAL_KEY",
             "video_model": "FAL_VIDEO_MODEL",
-            "ffmpeg_path": "FFMPEG_PATH",
-            "model": "DIRECTOR_MODEL",
         }
         for skey, evar in _env_map.items():
             val = saved.get(skey)

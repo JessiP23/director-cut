@@ -8,13 +8,9 @@ from app.db.repository import SettingsRepository
 
 router = APIRouter()
 
-# Keys that map to environment variables so agents pick them up at runtime
+# Persisted preferences that sync into env when saved (see PUT /api/settings).
 _ENV_MAP = {
-    "groq_api_key": "GROQ_API_KEY",
-    "fal_api_key": "FAL_KEY",
     "video_model": "FAL_VIDEO_MODEL",
-    "ffmpeg_path": "FFMPEG_PATH",
-    "model": "DIRECTOR_MODEL",
 }
 
 
@@ -33,7 +29,11 @@ async def get_settings():
     groq_eff = groq_saved or groq_env
     fal_eff = fal_saved or fal_env
 
-    out = {k: v for k, v in stored.items() if k not in ("groq_api_key", "fal_api_key")}
+    out = {
+        k: v
+        for k, v in stored.items()
+        if k not in ("groq_api_key", "fal_api_key", "model", "ffmpeg_path")
+    }
     # Never expose API key material — only flags for the UI
     out["groq_api_key"] = ""
     out["fal_api_key"] = ""
@@ -51,6 +51,8 @@ async def update_settings(body: dict):
     merged = dict(body)
     merged.pop("groq_api_key", None)
     merged.pop("fal_api_key", None)
+    merged.pop("model", None)
+    merged.pop("ffmpeg_path", None)
 
     if merged:
         await repo.upsert(merged)
@@ -58,8 +60,6 @@ async def update_settings(body: dict):
     stored = await repo.get_all()
 
     for setting_key, env_var in _ENV_MAP.items():
-        if setting_key in ("groq_api_key", "fal_api_key"):
-            continue
         candidate = merged.get(setting_key)
         if candidate is None:
             candidate = stored.get(setting_key)

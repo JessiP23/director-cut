@@ -3,15 +3,58 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import List, Optional
+import shutil
+from pathlib import Path
+
 from app.runtime.logger import get_logger
 
 log = get_logger("ffmpeg")
 
 
+def find_ffmpeg_binary() -> str:
+    """Resolve ffmpeg: FFMPEG_PATH env, then app bundle (DIRECTOR_RESOURCES_DIR), then PATH."""
+    custom = (os.getenv("FFMPEG_PATH") or "").strip()
+    if custom:
+        p = Path(custom)
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p.resolve())
+        w = shutil.which(custom)
+        if w:
+            return w
+
+    res_root = (os.getenv("DIRECTOR_RESOURCES_DIR") or "").strip()
+    if res_root:
+        base = Path(res_root)
+        names: list[Path] = [
+            base / "ffmpeg",
+            base / "ffmpeg.exe",
+            base / "bin" / "ffmpeg",
+            base / "bin" / "ffmpeg.exe",
+        ]
+        for candidate in names:
+            try:
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    return str(candidate.resolve())
+            except OSError:
+                continue
+
+    sys = shutil.which("ffmpeg")
+    if sys:
+        return sys
+    for abs_try in ("/usr/local/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"):
+        if os.path.isfile(abs_try) and os.access(abs_try, os.X_OK):
+            return abs_try
+
+    raise FileNotFoundError(
+        "FFmpeg not found. Bundle an ffmpeg binary in the app Resources folder (or set FFMPEG_PATH); "
+        "for development install ffmpeg (e.g. brew install ffmpeg)."
+    )
+
+
 async def run_ffmpeg(args: list[str], cwd: str | None = None) -> str:
     """Run an FFmpeg command and return stdout."""
-    cmd = ["ffmpeg", "-y"] + args
+    exe = find_ffmpeg_binary()
+    cmd = [exe, "-y"] + args
     log.info("ffmpeg_exec", cmd=" ".join(cmd))
     proc = await asyncio.create_subprocess_exec(
         *cmd,

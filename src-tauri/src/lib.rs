@@ -55,6 +55,32 @@ fn resolve_backend_dir() -> PathBuf {
     std::fs::canonicalize("../backend").unwrap_or_else(|_| PathBuf::from("../backend"))
 }
 
+/// Tauri bundle `Resources/` (macOS app) or `./resources/` beside the exe (Linux/Windows portable).
+fn resolve_bundle_resources_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    #[cfg(target_os = "macos")]
+    {
+        let macos_bins = exe.parent()?;
+        let contents = macos_bins.parent()?;
+        let resources = contents.join("Resources");
+        return if resources.is_dir() {
+            Some(resources)
+        } else {
+            None
+        };
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let dir = exe.parent()?;
+        let resources = dir.join("resources");
+        if resources.is_dir() {
+            Some(resources)
+        } else {
+            None
+        }
+    }
+}
+
 fn venv_python(backend_dir: &PathBuf) -> PathBuf {
     let venv_py = backend_dir.join("venv").join("bin").join("python");
     if venv_py.exists() {
@@ -212,6 +238,9 @@ fn start_backend(state: State<AppState>) -> Result<BackendStatus, String> {
     let mut cmd = Command::new(&python);
     cmd.env("PYTHONUNBUFFERED", "1");
     apply_backend_dotenv(&mut cmd, &backend_dir);
+    if let Some(res) = resolve_bundle_resources_dir() {
+        cmd.env("DIRECTOR_RESOURCES_DIR", res.to_string_lossy().as_ref());
+    }
     cmd.args([
         "-m",
         "uvicorn",
