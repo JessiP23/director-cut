@@ -263,3 +263,9 @@ MIT
 
 ## Build command
 - TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/director-cut.key)" cargo tauri build
+
+## Command to run to see deployed app logs
+/Applications/director-cut.app/Contents/MacOS/director-cut
+
+## command to run deployed app
+ -  xattr -cr /Applications/director-cut.app   
