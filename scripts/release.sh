@@ -15,6 +15,15 @@ fi
 CONF="src-tauri/tauri.conf.json"
 CARGO="src-tauri/Cargo.toml"
 
+# GitHub Actions builds from the tagged commit — not uncommitted local edits.
+if [[ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+  echo "❌ Git working tree is not clean."
+  echo "   Commit and push ALL fixes (e.g. src-tauri/src/lib.rs, backend/) before release,"
+  echo "   then run this script on a clean tree so CI matches your intent."
+  git status --short
+  exit 1
+fi
+
 CURRENT=$(python3 -c "import json; print(json.load(open('$CONF'))['version'])")
 IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
 

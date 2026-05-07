@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::Mutex;
 use std::thread;
@@ -81,8 +81,57 @@ fn resolve_bundle_resources_dir() -> Option<PathBuf> {
     }
 }
 
+/// Bundled `.app` backend lives under read-only-ish Resources; keep Python env user-writable.
+#[cfg(target_os = "macos")]
+fn backend_is_inside_macos_app_bundle(backend_dir: &Path) -> bool {
+    backend_dir
+        .to_string_lossy()
+        .contains(".app/Contents/Resources/")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn backend_is_inside_macos_app_bundle(_backend_dir: &Path) -> bool {
+    false
+}
+
+fn python_venv_root(backend_dir: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    if backend_is_inside_macos_app_bundle(backend_dir) {
+        if let Some(home) = std::env::var_os("HOME") {
+            let dir = PathBuf::from(home).join("Library/Application Support/director-cut");
+            return dir.join("python-venv");
+        }
+    }
+    backend_dir.join("venv")
+}
+
+/// Prefer Homebrew / concrete paths — `.app` processes launched from Finder often have no `python3` on `PATH`.
+fn resolve_host_python3() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        for p in [
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            "/usr/bin/python3",
+        ] {
+            if Path::new(p).is_file() {
+                return PathBuf::from(p);
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        for p in ["/usr/local/bin/python3", "/usr/bin/python3"] {
+            if Path::new(p).is_file() {
+                return PathBuf::from(p);
+            }
+        }
+    }
+    PathBuf::from("python3")
+}
+
 fn venv_python(backend_dir: &PathBuf) -> PathBuf {
-    let venv_py = backend_dir.join("venv").join("bin").join("python");
+    let venv_py = python_venv_root(backend_dir).join("bin").join("python");
     if venv_py.exists() {
         venv_py
     } else {
@@ -90,30 +139,58 @@ fn venv_python(backend_dir: &PathBuf) -> PathBuf {
     }
 }
 
-/// Ensure the venv exists and deps are installed (for bundled app).
+/// Ensure the venv exists and deps match `backend/pyproject.toml` (bundled + dev).
 fn ensure_venv(backend_dir: &PathBuf) {
-    // Ensure data dir exists for SQLite
     let data_dir = backend_dir.join("data");
     if !data_dir.exists() {
         let _ = std::fs::create_dir_all(&data_dir);
     }
 
-    let venv_dir = backend_dir.join("venv");
-    if venv_dir.join("bin").join("python").exists() {
-        return; // already set up
+    let venv_root = python_venv_root(backend_dir);
+    if let Some(parent) = venv_root.parent() {
+        let _ = std::fs::create_dir_all(parent);
     }
-    // Create venv
-    let _ = Command::new("python3")
-        .args(["-m", "venv", "venv"])
-        .current_dir(backend_dir)
-        .output();
-    // Install deps
-    let pip = venv_dir.join("bin").join("pip");
-    if pip.exists() {
-        let _ = Command::new(&pip)
-            .args(["install", "-q", "fastapi", "uvicorn[standard]", "aiosqlite", "httpx", "python-dotenv", "groq"])
+
+    let venv_py = venv_root.join("bin").join("python");
+    if !venv_py.exists() {
+        let host = resolve_host_python3();
+        match Command::new(&host)
+            .args(["-m", "venv"])
+            .arg(&venv_root)
+            .output()
+        {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => eprintln!(
+                "[director-cut] `{} -m venv` failed: {}",
+                host.display(),
+                String::from_utf8_lossy(&o.stderr)
+            ),
+            Err(e) => eprintln!(
+                "[director-cut] could not run `{}` for venv: {e}",
+                host.display()
+            ),
+        }
+    }
+
+    if venv_py.exists() {
+        match Command::new(&venv_py)
+            .args(["-m", "pip", "install", "-q", "."])
             .current_dir(backend_dir)
-            .output();
+            .output()
+        {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => eprintln!(
+                "[director-cut] pip install failed in {}: {}",
+                venv_root.display(),
+                String::from_utf8_lossy(&o.stderr)
+            ),
+            Err(e) => eprintln!("[director-cut] pip spawn failed: {e}"),
+        }
+    } else {
+        eprintln!(
+            "[director-cut] no venv at {} — install Python 3 (Homebrew or Xcode CLT)",
+            venv_py.display()
+        );
     }
 }
 
