@@ -92,11 +92,16 @@ jobs:
           DIRECTOR_EMBED_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           DIRECTOR_EMBED_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
           DIRECTOR_EMBED_GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # Baked into the macOS binary at compile time (see src-tauri/src/lib.rs option_env!)
+          DIRECTOR_EMBED_FAL_KEY: ${{ secrets.FAL_KEY }}
         run: |
           echo "Checking Supabase URL is set: ${DIRECTOR_EMBED_SUPABASE_URL:0:30}..."
           if [[ -z "$DIRECTOR_EMBED_SUPABASE_URL" || -z "$DIRECTOR_EMBED_SUPABASE_ANON_KEY" ]]; then
             echo "ERROR: Supabase secrets missing in GitHub Actions"
             exit 1
+          fi
+          if [[ -z "$DIRECTOR_EMBED_FAL_KEY" ]]; then
+            echo "WARNING: Secret FAL_KEY is empty — fal.ai render will not work until it is set and you rebuild."
           fi
           cargo tauri build --target aarch64-apple-darwin
 
