@@ -104,6 +104,11 @@ async def submit_approval(run_id: str, stage: str, decision: str, notes: str = "
         fut.set_result({"stage": stage, "decision": decision, "notes": notes})
 
 
+def pipeline_task_active(run_id: str) -> bool:
+    """True when the asyncio pipeline driver is actively running this run."""
+    return run_id in _active_runs
+
+
 async def cancel_run(run_id: str):
     task = _active_runs.pop(run_id, None)
     if task:

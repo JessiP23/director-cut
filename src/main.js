@@ -23,6 +23,176 @@ const STORAGE_KEYS = {
   mediaProjectFilter: "director.mediaProjectFilter",
 };
 
+const MCP_REMOTE_URL_KEY = "director.mcp_remote_url";
+
+let mcpRemoteToolsCache = [];
+let mcpSessionInitialized = false;
+
+function mcpBearerFromHeader() {
+  if (!authorizationHeader || !authorizationHeader.startsWith("Bearer ")) return "";
+  return authorizationHeader.slice(7).trim();
+}
+
+async function mcpRpc(method, params, rpcId = 1) {
+  const tok = mcpBearerFromHeader();
+  if (!tok) throw new Error("Not signed in");
+  const payload = JSON.stringify({ jsonrpc: "2.0", id: rpcId, method, params: params || {} });
+  const raw = await invoke("mcp_request", { path: "", method: "POST", body: payload, authToken: tok });
+  let j = null;
+  try {
+    j = JSON.parse(raw);
+  } catch {
+    return { _parse_error: true, raw };
+  }
+  return j;
+}
+
+function renderMcpToolList(tools) {
+  const host = document.getElementById("mcp-tools-list");
+  if (!host) return;
+  if (!tools?.length) {
+    host.innerHTML = '<p class="item-meta">No tools listed.</p>';
+    return;
+  }
+  host.innerHTML = tools
+    .map(
+      (t) => `
+    <div class="item mcp-tool-row" data-tool="${escapeHtml(t.name)}">
+      <div>
+        <span class="item-name">${escapeHtml(t.name)}</span><br/>
+        <span class="item-meta">${escapeHtml(t.description || "")}</span>
+      </div>
+      <button type="button" class="btn btn-outline btn-mcp-run-tool" data-tool="${escapeHtml(t.name)}">Run</button>
+    </div>`,
+    )
+    .join("");
+  host.querySelectorAll(".btn-mcp-run-tool").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const tool = btn.getAttribute("data-tool");
+      await mcpCallTool(tool, {});
+    });
+  });
+}
+
+async function mcpLoadTools(remoteTools) {
+  const panel = document.getElementById("mcp-result-panel");
+  const listSource = remoteTools && remoteTools.length ? remoteTools : null;
+  if (listSource) {
+    renderMcpToolList(listSource.concat(mcpRemoteToolsCache));
+    return;
+  }
+  const listed = await mcpRpc("tools/list", {}, 3);
+  if (listed?.error) {
+    if (panel) panel.textContent = JSON.stringify(listed.error, null, 2);
+    throw new Error(listed.error.message || "tools/list failed");
+  }
+  const tools = listed?.result?.tools || [];
+  renderMcpToolList(tools.concat(mcpRemoteToolsCache));
+}
+
+async function mcpCallTool(toolName, args) {
+  const panel = document.getElementById("mcp-result-panel");
+  try {
+    const call = await mcpRpc(
+      "tools/call",
+      { name: toolName, arguments: args || {} },
+      Math.floor(Math.random() * 1e9),
+    );
+    if (panel) panel.textContent = JSON.stringify(call, null, 2);
+    if (call?.error) toast(call.error.message || "Tool error", "error");
+  } catch (e) {
+    if (panel) panel.textContent = String(e);
+    toast(String(e), "error");
+  }
+}
+
+async function mcpInit() {
+  const status = document.getElementById("mcp-local-status");
+  const tok = mcpBearerFromHeader();
+  if (!tok) {
+    if (status) status.textContent = "Sign in required";
+    toast("Sign in to use MCP.", "error");
+    return;
+  }
+  try {
+    await invoke("mcp_request", { path: "/health", method: "GET", body: null, authToken: tok });
+  } catch {
+    /* health optional */
+  }
+  try {
+    const init = await mcpRpc(
+      "initialize",
+      {
+        protocolVersion: "2025-06-18",
+        capabilities: { tools: {} },
+        clientInfo: { name: "director-cut", version: "1" },
+      },
+      1,
+    );
+    if (init?.error) throw new Error(init.error.message || JSON.stringify(init.error));
+    const note = JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
+    await invoke("mcp_request", { path: "", method: "POST", body: note, authToken: tok });
+    await mcpLoadTools();
+    mcpSessionInitialized = true;
+    if (status) status.textContent = "Connected";
+    toast("Local MCP ready", "success");
+  } catch (e) {
+    mcpSessionInitialized = false;
+    if (status) status.textContent = "Error";
+    const msg = String(e);
+    if (msg.includes("MCP_AUTH_REQUIRED")) {
+      toast("MCP session unauthorized — refresh your WM Studio sign-in.", "error");
+      return;
+    }
+    toast("MCP init failed: " + msg, "error");
+  }
+}
+
+async function mcpConnectRemote(remoteUrl) {
+  const badge = document.getElementById("mcp-remote-status");
+  try {
+    const u = remoteUrl.trim().replace(/\/$/, "");
+    if (!u.startsWith("https://")) {
+      toast("Remote MCP URL must be https", "warning");
+      return;
+    }
+    localStorage.setItem(MCP_REMOTE_URL_KEY, u);
+    const probe = `${u.replace(/\/mcp$/i, "")}/.well-known/oauth-protected-resource`;
+    let ok = false;
+    try {
+      const res = await fetch(probe);
+      ok = res.ok;
+      if (badge) badge.textContent = `${ok ? "Reachable" : "HTTP " + res.status}: ${probe}`;
+    } catch (fe) {
+      if (badge) badge.textContent = `Could not fetch metadata (${probe}): ${fe}`;
+    }
+    toast(ok ? "Remote MCP metadata OK" : "Remote metadata unreachable (still saved URL)", ok ? "success" : "info");
+  } catch (e) {
+    if (badge) badge.textContent = String(e);
+  }
+}
+
+async function mcpRemoteImportTools() {
+  const url = (localStorage.getItem(MCP_REMOTE_URL_KEY) || "").trim();
+  if (!url) {
+    toast("Connect a remote URL first.", "info");
+    return;
+  }
+  toast("Remote tool import runs in MCP clients outside the WKWebView (CORS). Use director-mcp with this URL.", "info");
+}
+
+function hydrateMcpProjectSelect() {
+  const sel = document.getElementById("mcp-quick-project");
+  if (!sel) return;
+  const opts = projectsCache.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("");
+  sel.innerHTML = opts || '<option value="">Create a project first</option>';
+}
+
+async function mcpEnsureInit() {
+  if (mcpSessionInitialized) return;
+  await mcpInit();
+}
+
 function pickPersistedNonSecretSettings(settingsPayload) {
   if (!settingsPayload || typeof settingsPayload !== "object") return {};
   const keys = ["video_model"];
@@ -256,6 +426,7 @@ async function refreshAppShell() {
 async function applyDirectorSession(session) {
   if (!session?.access_token) {
     authorizationHeader = null;
+    mcpSessionInitialized = false;
     const emailEl = document.getElementById("sidebar-user-email");
     if (emailEl) emailEl.textContent = "";
     setAuthChromeVisible(false);
@@ -431,6 +602,10 @@ function navigateTo(page) {
   if (el) el.classList.add("active");
   const link = document.querySelector(`[data-page="${page}"]`);
   if (link) link.classList.add("active");
+  if (page === "mcp") {
+    hydrateMcpProjectSelect();
+    mcpEnsureInit().catch((e) => console.error(e));
+  }
 }
 
 // --- Backend control ---
@@ -1157,6 +1332,29 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   document.getElementById("btn-new-project").addEventListener("click", createProject);
   document.getElementById("settings-form").addEventListener("submit", saveSettings);
+  document.getElementById("btn-mcp-init")?.addEventListener("click", () => mcpInit().catch((e) => console.error(e)));
+  document.getElementById("btn-mcp-refresh-tools")?.addEventListener("click", () =>
+    mcpLoadTools(null).catch((e) => toast(String(e), "error")),
+  );
+  document.getElementById("btn-mcp-remote-connect")?.addEventListener("click", () => {
+    const v = document.getElementById("mcp-remote-url")?.value || "";
+    mcpConnectRemote(v);
+  });
+  document.getElementById("btn-mcp-remote-import")?.addEventListener("click", () => mcpRemoteImportTools());
+  document.getElementById("btn-mcp-quick-run")?.addEventListener("click", async () => {
+    const pid = document.getElementById("mcp-quick-project")?.value;
+    const pr = document.getElementById("mcp-quick-prompt")?.value?.trim();
+    if (!pid || !pr) {
+      toast("Choose a project and prompt.", "info");
+      return;
+    }
+    await mcpEnsureInit();
+    await mcpCallTool("director.run.create", {
+      project_id: pid,
+      prompt: pr,
+      settings: {},
+    });
+  });
   const autoplayToggle = document.getElementById("preview-autoplay-toggle");
   if (autoplayToggle) {
     autoPlayPreview = localStorage.getItem("preview.autoplay") !== "0";
@@ -1177,6 +1375,10 @@ window.addEventListener("DOMContentLoaded", () => {
   }
   restoreContext();
   refreshScopeBadges();
+  const _mcpSaved = localStorage.getItem(MCP_REMOTE_URL_KEY);
+  if (_mcpSaved && document.getElementById("mcp-remote-url")) {
+    document.getElementById("mcp-remote-url").value = _mcpSaved;
+  }
   document.getElementById("btn-auth-google")?.addEventListener("click", () => runOAuth("google"));
   document.getElementById("btn-auth-github")?.addEventListener("click", () => runOAuth("github"));
   document.getElementById("btn-auth-apple")?.addEventListener("click", () => runOAuth("apple"));
@@ -1214,7 +1416,7 @@ window.addEventListener("DOMContentLoaded", () => {
         case "2": navigateTo("projects"); break;
         case "3": navigateTo("runs"); break;
         case "4": navigateTo("artifacts"); break;
-        case "5": navigateTo("settings"); break;
+        case "6": navigateTo("mcp"); break;
       }
     }
   });

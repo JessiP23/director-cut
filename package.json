@@ -3,5 +3,10 @@
     "@tauri-apps/plugin-dialog": "^2.7.0",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.22.0",
+    "mcp-remote": "^0.1.38",
+    "zod": "^3.25.76"
   }
 }

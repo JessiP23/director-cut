@@ -59,6 +59,7 @@
             </a>
           </li>
           <li><a href="#" data-page="artifacts">Media Library</a></li>
+          <li><a href="#" data-page="mcp">MCP</a></li>
           <li><a href="#" data-page="settings">Settings</a></li>
         </ul>
         <div class="sidebar-footer">
@@ -233,6 +234,57 @@
             </div>
           </header>
           <div id="artifact-list" class="item-list"></div>
+        </section>
+
+        <!-- ─── MCP bridge ─── -->
+        <section id="page-mcp" class="page">
+          <header class="page-header">
+            <div>
+              <h1>MCP</h1>
+              <p class="page-subtitle">Model Context Protocol bridge to the local engine and remote director-mcp deployments</p>
+            </div>
+          </header>
+
+          <div class="settings-grid">
+            <div class="glass-card settings-section">
+              <h4>Local MCP</h4>
+              <p id="mcp-local-status" class="item-meta">Disconnected</p>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;">
+                <button type="button" id="btn-mcp-init" class="btn btn-primary">Initialize</button>
+                <button type="button" id="btn-mcp-refresh-tools" class="btn btn-outline">Refresh tools</button>
+              </div>
+              <div id="mcp-tools-list" class="item-list" style="max-height:420px;overflow:auto;"></div>
+              <h4 style="margin-top:14px;">Last result</h4>
+              <pre id="mcp-result-panel" class="scene-shell" style="max-height:220px;overflow:auto;">—</pre>
+            </div>
+
+            <div class="glass-card settings-section">
+              <h4>Remote MCP connector</h4>
+              <p class="item-meta">Paste a Streamable HTTP MCP base URL (director-mcp package).</p>
+              <div class="form-group">
+                <label for="mcp-remote-url">Remote MCP URL</label>
+                <input id="mcp-remote-url" type="url" placeholder="https://your-host.example/mcp" autocomplete="off" />
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button type="button" id="btn-mcp-remote-connect" class="btn btn-primary">Connect</button>
+                <button type="button" id="btn-mcp-remote-import" class="btn btn-outline">Import tools</button>
+              </div>
+              <p id="mcp-remote-status" class="item-meta" style="margin-top:8px;">—</p>
+            </div>
+
+            <div class="glass-card settings-section">
+              <h4>Quick run via MCP</h4>
+              <div class="form-group">
+                <label for="mcp-quick-project">Project</label>
+                <select id="mcp-quick-project"><option value="">Loading…</option></select>
+              </div>
+              <div class="form-group">
+                <label for="mcp-quick-prompt">Prompt</label>
+                <textarea id="mcp-quick-prompt" rows="4" placeholder="Describe your production…"></textarea>
+              </div>
+              <button type="button" id="btn-mcp-quick-run" class="btn btn-glow">Run via MCP</button>
+            </div>
+          </div>
         </section>
 
         <!-- ─── Settings ─── -->

@@ -6,6 +6,7 @@ import base64
 import hashlib
 import os
 import secrets
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -84,7 +85,50 @@ import httpx  # noqa: E402
 from html import escape  # noqa: E402
 
 
-app = FastAPI(title="Director's Cut", version="0.1.0")
+@asynccontextmanager
+async def director_cut_lifespan(app: FastAPI):
+    """Restore DB settings into env and tie in the FastMCP Streamable HTTP lifespan."""
+    from app.db.connection import get_db
+
+    db = await get_db()
+    await db.close()
+    try:
+        from app.db.repository import SettingsRepository
+
+        repo = SettingsRepository()
+        saved = await repo.get_all()
+        env_map_db = {
+            "groq_api_key": "GROQ_API_KEY",
+            "fal_api_key": "FAL_KEY",
+            "video_model": "FAL_VIDEO_MODEL",
+        }
+        for skey, evar in env_map_db.items():
+            val = saved.get(skey)
+            if val:
+                os.environ[evar] = str(val)
+        if saved.get("fal_api_key"):
+            os.environ["FAL_API_KEY"] = str(saved["fal_api_key"])
+    except Exception as e:
+        print(f"⚠️ Could not restore settings: {e}")
+
+    url_ok = bool((os.getenv("NEXT_PUBLIC_SUPABASE_URL") or "").strip())
+    anon_ok = bool((os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY") or "").strip())
+    if not (url_ok and anon_ok):
+        print("⚠️ Supabase public vars missing after .env load. Tried:")
+        for p in ENV_FILES_TRIED:
+            print(f"   - {p}")
+        print("   Point WMSTUDIO_PROJECT_ROOT at your wmstudio repo, set DIRECTOR_ENV_FILE, or add keys to backend .env.")
+
+    print("✅ Director's Cut backend ready on http://127.0.0.1:9420")
+
+    from app.mcp_server import get_or_build_mcp_starlette
+
+    mcp_starlette = get_or_build_mcp_starlette()
+    async with mcp_starlette.lifespan(app):
+        yield
+
+
+app = FastAPI(title="Director's Cut", version="0.1.0", lifespan=director_cut_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -211,6 +255,9 @@ async def require_wmstudio_auth(request: Request, call_next):
         return await call_next(request)
     if path.startswith("/media"):
         # allow /media/exports/… for <video> tags (no Authorization header possible)
+        return await call_next(request)
+    if path.startswith("/mcp"):
+        # MCP performs its own Bearer checks (JSON-RPC -32001 Unauthorized).
         return await call_next(request)
 
     tok = extract_bearer_access_token(request)
@@ -479,43 +526,6 @@ async def health():
     return {"status": "ok", "version": "0.1.0"}
 
 
-@app.on_event("startup")
-async def startup():
-    """Initialize DB on startup and restore saved settings into env."""
-    from app.db.connection import get_db
-
-    db = await get_db()
-    await db.close()
-    try:
-        from app.db.repository import SettingsRepository
-
-        repo = SettingsRepository()
-        saved = await repo.get_all()
-        _env_map = {
-            "groq_api_key": "GROQ_API_KEY",
-            "fal_api_key": "FAL_KEY",
-            "video_model": "FAL_VIDEO_MODEL",
-        }
-        for skey, evar in _env_map.items():
-            val = saved.get(skey)
-            if val:
-                os.environ[evar] = str(val)
-        if saved.get("fal_api_key"):
-            os.environ["FAL_API_KEY"] = str(saved["fal_api_key"])
-    except Exception as e:
-        print(f"⚠️ Could not restore settings: {e}")
-
-    url_ok = bool((os.getenv("NEXT_PUBLIC_SUPABASE_URL") or "").strip())
-    anon_ok = bool((os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY") or "").strip())
-    if not (url_ok and anon_ok):
-        print("⚠️ Supabase public vars missing after .env load. Tried:")
-        for p in ENV_FILES_TRIED:
-            print(f"   - {p}")
-        print("   Point WMSTUDIO_PROJECT_ROOT at your wmstudio repo, set DIRECTOR_ENV_FILE, or add keys to backend .env.")
-
-    print("✅ Director's Cut backend ready on http://127.0.0.1:9420")
-
-
 # ── Protected API routers
 
 from app.routes import projects, runs, artifacts, approvals, settings, events  # noqa: E402
@@ -526,3 +536,12 @@ app.include_router(artifacts.router, prefix="/api/artifacts", tags=["artifacts"]
 app.include_router(approvals.router, prefix="/api/approvals", tags=["approvals"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(events.router, prefix="/api/events", tags=["events"])
+
+@app.get("/mcp/health")
+async def mcp_health_standalone():
+    return {"status": "ok"}
+
+
+from app.mcp_server import mount_mcp  # noqa: E402
+
+mount_mcp(app)

@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 
 from fastapi import APIRouter
+
 from app.db.repository import SettingsRepository
+from app.desktop_mcp_token import ensure_signing_secret, issue_desktop_token
+from app.mcp_server import director_mcp_session_count, director_mcp_tool_count
 
 router = APIRouter()
 
@@ -49,8 +53,6 @@ async def update_settings(body: dict):
     repo = SettingsRepository()
 
     merged = dict(body)
-    merged.pop("groq_api_key", None)
-    merged.pop("fal_api_key", None)
     merged.pop("model", None)
     merged.pop("ffmpeg_path", None)
 
@@ -76,3 +78,25 @@ async def update_settings(body: dict):
         os.environ["GROQ_API_KEY"] = str(gk)
 
     return {"ok": True}
+
+
+@router.get("/mcp")
+async def get_mcp_settings():
+    """Return MCP integration metrics for the desktop UI."""
+    repo = SettingsRepository()
+    stored = await repo.get_all()
+    return {
+        "mcp_enabled": bool(stored.get("mcp_enabled", True)),
+        "mcp_tools_count": director_mcp_tool_count(),
+        "mcp_session_count": director_mcp_session_count(),
+    }
+
+
+@router.post("/mcp/rotate-token")
+async def rotate_mcp_desktop_token():
+    """Mint a 30-day HS256 desktop token suitable for Authorization: Bearer on /mcp."""
+    secret = await ensure_signing_secret()
+    token, expires_at = issue_desktop_token(secret)
+    repo = SettingsRepository()
+    await repo.upsert({"desktop_mcp_rotated_at": datetime.now(timezone.utc).isoformat()})
+    return {"token": token, "expires_at": expires_at}

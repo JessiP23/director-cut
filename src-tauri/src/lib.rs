@@ -1,3 +1,4 @@
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,21 @@ struct AppState {
     python_process: Mutex<Option<Child>>,
     backend_port: u16,
     backend_dir: Mutex<PathBuf>,
+}
+
+#[derive(Default)]
+struct McpHttpState {
+    client: reqwest::Client,
+    session_id: Mutex<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpRequestPayload {
+    path: String,
+    method: String,
+    body: Option<String>,
+    auth_token: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -444,6 +460,102 @@ async fn api_request(
     resp.text().await.map_err(|e| e.to_string())
 }
 
+/// Proxy MCP Streamable HTTP for the Vue/WebView (sessions + Bearer tokens).
+#[tauri::command]
+async fn mcp_request(
+    backend: State<'_, AppState>,
+    mcp_state: State<'_, McpHttpState>,
+    payload: McpRequestPayload,
+) -> Result<String, String> {
+    let McpRequestPayload {
+        path,
+        method,
+        body,
+        auth_token,
+    } = payload;
+    let base = format!("http://127.0.0.1:{}/mcp", backend.backend_port);
+    let url = if path.is_empty() {
+        base
+    } else if path.starts_with('/') {
+        format!("{base}{path}")
+    } else {
+        format!("{base}/{path}")
+    };
+
+    let upper = method.to_uppercase();
+    let mut req = match upper.as_str() {
+        "GET" => mcp_state.client.get(&url),
+        "POST" => {
+            let mut r = mcp_state
+                .client
+                .post(&url)
+                .header(CONTENT_TYPE, "application/json");
+            if let Some(b) = body {
+                r = r.body(b);
+            }
+            r
+        }
+        "DELETE" => {
+            let mut r = mcp_state.client.delete(&url);
+            if let Some(b) = body {
+                r = r.body(b);
+            }
+            r
+        }
+        _ => return Err(format!("Unsupported MCP method {upper}")),
+    };
+
+    req = req.header(
+        ACCEPT,
+        "application/json, text/event-stream",
+    );
+
+    if let Some(t) = auth_token.filter(|s| !s.trim().is_empty()) {
+        let bearer = format!("Bearer {}", t.trim());
+        req = req.header(AUTHORIZATION, bearer);
+    }
+
+    let sid_snapshot = {
+        let guard = mcp_state.session_id.lock().map_err(|e| e.to_string())?;
+        guard.clone()
+    };
+    if !sid_snapshot.is_empty() {
+        req = req.header("Mcp-Session-Id", sid_snapshot);
+    }
+
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+    let status = resp.status();
+
+    let new_sid = resp
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+
+    if status.as_u16() == 401 {
+        if let Ok(mut g) = mcp_state.session_id.lock() {
+            g.clear();
+        }
+        return Err("MCP_AUTH_REQUIRED".into());
+    }
+
+    if let Some(ns) = new_sid {
+        if let Ok(mut g) = mcp_state.session_id.lock() {
+            *g = ns;
+        }
+    }
+
+    Ok(text)
+}
+
+#[tauri::command]
+async fn mcp_get_session(mcp_state: State<'_, McpHttpState>) -> Result<String, String> {
+    let g = mcp_state.session_id.lock().map_err(|e| e.to_string())?;
+    Ok(g.clone())
+}
+
 // ---------------------------------------------------------------------------
 // App entry
 // ---------------------------------------------------------------------------
@@ -460,12 +572,15 @@ pub fn run() {
             backend_port: 9420,
             backend_dir: Mutex::new(bd), // <-- Now bd exists
         })
+        .manage(McpHttpState::default())
         .invoke_handler(tauri::generate_handler![
             start_backend,
             stop_backend,
             open_external_url,
             backend_health,
             api_request,
+            mcp_request,
+            mcp_get_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
