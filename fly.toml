@@ -1,0 +1,29 @@
+# fly.toml app configuration file generated for director-cut on 2026-05-08T13:52:51-04:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'director-cut'
+primary_region = 'ord'
+
+[build]
+  dockerfile = 'backend/Dockerfile'
+
+# Fly proxies to internal_port; the Docker image uses ${PORT:-9420}.
+# Without PORT, uvicorn binds 9420 while the proxy expects 8080 → connection refused.
+[env]
+  PORT = '8080'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 1024

@@ -1,0 +1,9 @@
+# Context for `docker build -f backend/Dockerfile .` (Fly + local)
+.git
+src-tauri/target
+**/node_modules
+**/.venv*
+**/venv
+**/__pycache__
+**/.*_cache
+data

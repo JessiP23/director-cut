@@ -239,6 +239,10 @@ director-cut/  - cargo tauri android dev
 └── data/                   # SQLite DB + exports
 ```
 
+## Headless API (no desktop window)
+
+The Python backend can run alone for MCP, CI, or cloud deploy — same routes as inside Tauri (`/health`, `/api/*`, `/mcp`, …). Copy-paste commands, Docker, Fly.io notes, and security checklist: [docs/deploy-headless-api.md](docs/deploy-headless-api.md).
+
 ## License
 
 MIT
@@ -269,3 +273,6 @@ MIT
 
 ## command to run deployed app
  -  xattr -cr /Applications/director-cut.app   
+
+## command to run the deployment for the base url for the mcp
+- fly deploy -a director-cut
