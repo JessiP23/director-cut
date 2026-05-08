@@ -416,7 +416,11 @@ async function refreshAppShell() {
   try {
     await loadProjects();
     await loadRuns();
-    await loadMediaLibrary();
+    // loadMediaLibrary hits GET /projects + /runs again and up to N× /outputs — only when Artifacts is active
+    const artifactsEl = document.getElementById("page-artifacts");
+    if (artifactsEl?.classList.contains("active")) {
+      await loadMediaLibrary();
+    }
     await loadSettings();
   } catch {
     /* ignore */
