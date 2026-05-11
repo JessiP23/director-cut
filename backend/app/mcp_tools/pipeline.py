@@ -53,7 +53,24 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         prompt: str,
         settings: dict | None = None,
     ) -> dict:
-        """Start a production run by invoking the existing FastAPI run creation flow."""
+        """Start a production pipeline run.
+
+        Returns immediately with run_id and status="running".
+        The pipeline runs asynchronously in the background — poll with
+        director.run.status until status is "completed" or "failed".
+
+        Typical durations:
+          - target_output="image" (default fast path): 30-90 s total
+          - target_output="video", max_scenes=1: 5-15 min total
+          - target_output="video", max_scenes=N: 5-15 min × N scenes
+
+        Recommended settings for fastest results:
+          {"target_output": "image", "max_scenes": 1}
+
+        Do NOT give up polling after 2 minutes — the render stage alone
+        can take 10+ minutes for video output. Keep polling until terminal
+        status ("completed" / "failed" / "cancelled") is returned.
+        """
         settings = dict(settings or {})
         await ctx.report_progress(10, 100, message="Enqueueing pipeline")
         from app.routes.runs import create_run

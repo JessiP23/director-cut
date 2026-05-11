@@ -288,3 +288,5 @@ fly secrets set DATABASE_URL="postgresql://postgres:<password>@db.<project>.supa
 ```
 
 On startup the backend also recovers any runs that were left in `running` or `awaiting_approval` state by a previous process, marking them `failed` with `error=process_restart`.
+
+**Debugging failed runs:** `GET /api/runs/{id}` includes a `last_error` field (latest row from the `errors` table) so you can see the failure reason without calling `GET /api/runs/{id}/errors`.

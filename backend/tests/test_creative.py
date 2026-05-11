@@ -229,7 +229,7 @@ async def test_run_outputs_includes_asset_url_fields(client):
         "artifact_ids": [],
     }
     await pool.execute(
-        "INSERT INTO checkpoints (id, run_id, stage, state_json, created_at)"
+        "INSERT INTO run_checkpoints (id, run_id, stage, state_json, created_at)"
         " VALUES ($1, $2, $3, $4, $5)",
         uuid.uuid4().hex, run_id, "render", json.dumps(checkpoint_state), "2024-01-01",
     )

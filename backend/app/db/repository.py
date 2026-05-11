@@ -111,7 +111,7 @@ class CheckpointRepository:
         cid = uuid.uuid4().hex
         now = _now()
         await pool.execute(
-            "INSERT INTO checkpoints (id, run_id, stage, state_json, created_at)"
+            "INSERT INTO run_checkpoints (id, run_id, stage, state_json, created_at)"
             " VALUES ($1, $2, $3, $4, $5)",
             cid, run_id, stage, json.dumps(state), now,
         )
@@ -119,7 +119,7 @@ class CheckpointRepository:
     async def latest(self, run_id: str) -> Optional[dict]:
         pool = get_pool()
         row = await pool.fetchrow(
-            "SELECT state_json FROM checkpoints"
+            "SELECT state_json FROM run_checkpoints"
             " WHERE run_id = $1 ORDER BY created_at DESC LIMIT 1",
             run_id,
         )

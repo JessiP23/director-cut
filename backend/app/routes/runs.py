@@ -40,11 +40,39 @@ async def create_run(body: RunCreate):
 
     try:
         from app.graph.engine import start_run_async
+
         asyncio.create_task(start_run_async(run_id, body))
     except Exception as e:
         import traceback
+
         traceback.print_exc()
+        fail_at = datetime.utcnow().isoformat()
+        msg = f"engine_import_failed: {e}"
+        await pool.execute(
+            "UPDATE runs SET status='failed', updated_at=$1 WHERE id=$2",
+            fail_at,
+            run_id,
+        )
+        await pool.execute(
+            "INSERT INTO errors (id, run_id, message, recoverable, created_at)"
+            " VALUES ($1, $2, $3, 0, $4)",
+            uuid.uuid4().hex,
+            run_id,
+            msg,
+            fail_at,
+        )
         print(f"⚠️ Pipeline engine failed to start: {e}")
+
+        return RunOut(
+            id=run_id,
+            project_id=body.project_id,
+            prompt=body.prompt,
+            status=RunStatus.FAILED,
+            current_stage=Stage.INTAKE,
+            created_at=now,
+            updated_at=fail_at,
+            last_error=msg,
+        )
 
     return RunOut(
         id=run_id, project_id=body.project_id, prompt=body.prompt,
@@ -119,7 +147,7 @@ async def get_run_outputs(run_id: str, request: Request):
     from app.db.repository import ArtifactRepository
 
     row = await pool.fetchrow(
-        "SELECT state_json FROM checkpoints WHERE run_id=$1 ORDER BY created_at DESC LIMIT 1",
+        "SELECT state_json FROM run_checkpoints WHERE run_id=$1 ORDER BY created_at DESC LIMIT 1",
         run_id,
     )
     run_row = await pool.fetchrow(
@@ -154,8 +182,14 @@ async def get_run_outputs(run_id: str, request: Request):
             image_urls.append(url)
 
     render_out = outputs.get("render", {})
-    if not video_url and render_out.get("output_path"):
-        video_url = _artifact_url(base_url, render_out["output_path"])
+    out_path = render_out.get("output_path", "")
+    if out_path:
+        out_url = _artifact_url(base_url, out_path)
+        if out_path.endswith(".jpg") or out_path.endswith(".png") or out_path.endswith(".webp"):
+            if out_url not in image_urls:
+                image_urls.append(out_url)
+        elif not video_url:
+            video_url = out_url
     for p in render_out.get("preview_clip_paths", []):
         url = _artifact_url(base_url, p)
         if url not in preview_urls:

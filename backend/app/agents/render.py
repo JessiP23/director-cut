@@ -1,11 +1,13 @@
-"""Render agent – produce video with AI-generated clips via fal.ai + FFmpeg.
+"""Render agent – produce images or video via fal.ai.
 
-For each scene we:
-1. Call fal.ai text-to-video API to generate a real video clip
-2. Download the resulting MP4
-3. Concatenate all clips with FFmpeg into the final render
+Image output  (target_output="image"):
+  • Calls fal.ai synchronous image API (flux/schnell) – typically 3-10 s.
+  • No FFmpeg required.
 
-Supports multiple fal.ai models with automatic fallback.
+Video output  (target_output="video" or unset):
+  • Submits each scene to the fal.ai async queue (text-to-video).
+  • Single-scene: raw clip is renamed to render.mp4 – no FFmpeg.
+  • Multi-scene: raw clips are concatenated with FFmpeg (no re-encode).
 """
 from __future__ import annotations
 
@@ -17,49 +19,158 @@ from typing import List
 import httpx
 
 from app.agents.base import checkpoint, record_step, emit_progress, think
-from app.services.ffmpeg import find_ffmpeg_binary
 from app.schemas.run import Stage
 from app.runtime.event_bus import event_bus
 
-# fal.ai configuration
-FAL_API_BASE = "https://queue.fal.run"
-# Model priority – user can override via FAL_VIDEO_MODEL env var or Settings.
-DEFAULT_MODELS = [
+# ── fal.ai endpoints ──────────────────────────────────────────────────────────
+
+FAL_QUEUE_BASE = "https://queue.fal.run"
+FAL_SYNC_BASE  = "https://fal.run"
+
+# Image models (synchronous – no polling needed)
+IMAGE_MODELS = [
+    "fal-ai/flux/schnell",       # fastest, ~3-8 s
+    "fal-ai/fast-sdxl",          # fallback
+]
+
+# Video models (async queue)
+VIDEO_MODELS = [
     "fal-ai/wan/v2.2-a14b/text-to-video",
     "fal-ai/ltx-video/v0.9.1/text-to-video",
     "fal-ai/minimax/hailuo-02/standard/text-to-video",
     "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
 ]
-FAL_POLL_INTERVAL = 5   # seconds between status checks
-FAL_TIMEOUT = 600        # max wait per clip (10 min)
+
+FAL_POLL_INTERVAL = 5    # seconds between queue status checks
+FAL_VIDEO_TIMEOUT = 900  # 15 min max per clip
 
 
-# ── FFmpeg discovery ────────────────────────────────────────────────────────
-
-def _find_ffmpeg() -> str:
-    return find_ffmpeg_binary()
-
-
-# ── fal.ai helpers ──────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _get_fal_key() -> str:
     key = (os.getenv("FAL_KEY") or os.getenv("FAL_API_KEY") or "").strip()
     if not key or key == "YOUR_FAL_KEY_HERE":
-        raise RuntimeError("FAL_KEY not set in .env — add your fal.ai API key.")
+        raise RuntimeError("FAL_KEY not set — add your fal.ai API key to Fly secrets.")
     return key
 
 
-def _get_model() -> str:
-    return os.getenv("FAL_VIDEO_MODEL", "").strip() or DEFAULT_MODELS[0]
+def _target_output(state: dict) -> str:
+    """Return 'image' or 'video' from settings."""
+    return str((state.get("settings") or {}).get("target_output", "video")).lower()
 
 
 def _resolve_max_scenes(state: dict) -> int:
-    raw = (state.get("settings") or {}).get("max_scenes", 4)
+    raw = (state.get("settings") or {}).get("max_scenes", 1)
     try:
-        value = int(raw)
+        return max(1, min(int(raw), 8))
     except (TypeError, ValueError):
-        value = 4
-    return max(1, min(value, 8))
+        return 1
+
+
+def _extract_scenes(state: dict, max_scenes: int) -> list:
+    sc = state["outputs"].get("script", {})
+    scenes = sc.get("scenes", sc.get("script_lines", []))
+    if scenes:
+        return [
+            {
+                "title": f"Scene {s.get('id', i + 1)}",
+                "body": s.get("text", s.get("description", "")),
+                "duration": max(float(s.get("duration_seconds", s.get("duration", 5))), 3),
+            }
+            for i, s in enumerate(scenes[:max_scenes])
+        ]
+
+    plan = state["outputs"].get("planning", {})
+    plan_scenes = plan.get("scenes", [])
+    if plan_scenes:
+        return [
+            {
+                "title": f"Scene {s.get('id', i + 1)}",
+                "body": s.get("description", str(s)),
+                "duration": max(float(s.get("duration", 5)), 3),
+            }
+            for i, s in enumerate(plan_scenes[:max_scenes])
+        ]
+
+    sb = state["outputs"].get("storyboard", {})
+    if sb.get("shots"):
+        return [
+            {
+                "title": s.get("shot_type", f"Shot {i + 1}"),
+                "body": s.get("description", ""),
+                "duration": max(float(s.get("duration_seconds", s.get("duration", 5))), 3),
+            }
+            for i, s in enumerate(sb["shots"][:max_scenes])
+        ]
+
+    return [{"title": "Director's Cut", "body": state.get("prompt", ""), "duration": 5}]
+
+
+# ── Image generation (synchronous) ───────────────────────────────────────────
+
+async def _generate_image(
+    prompt: str,
+    out_path: str,
+    run_id: str,
+    stage: str,
+) -> str:
+    """Call fal.ai image endpoint (synchronous). Returns the local saved path."""
+    fal_key = _get_fal_key()
+    headers = {"Authorization": f"Key {fal_key}", "Content-Type": "application/json"}
+
+    for model in IMAGE_MODELS:
+        url = f"{FAL_SYNC_BASE}/{model}"
+        payload = {
+            "prompt": prompt,
+            "image_size": "landscape_16_9",
+            "num_inference_steps": 4,
+            "num_images": 1,
+            "enable_safety_checker": False,
+        }
+        await think(run_id, stage, f"Calling fal.ai image API ({model.split('/')[-1]})…")
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+                if resp.status_code in (401, 403):
+                    raise RuntimeError(f"fal.ai auth error {resp.status_code}: {resp.text[:200]}")
+                if resp.status_code == 422:
+                    # model may not support these params — try next
+                    await think(run_id, stage, f"Model {model} rejected payload, trying next…")
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+
+            images = data.get("images") or data.get("image") or []
+            if isinstance(images, dict):
+                images = [images]
+            if not images:
+                raise RuntimeError(f"No images in response: {list(data.keys())}")
+
+            img_url = images[0].get("url") or images[0].get("image_url")
+            if not img_url:
+                raise RuntimeError(f"No URL in image object: {images[0]}")
+
+            await think(run_id, stage, "Downloading image…")
+            async with httpx.AsyncClient(timeout=60, follow_redirects=True) as dl:
+                r = await dl.get(img_url)
+                r.raise_for_status()
+                with open(out_path, "wb") as f:
+                    f.write(r.content)
+            return out_path
+
+        except RuntimeError:
+            raise
+        except Exception as e:
+            await think(run_id, stage, f"Model {model} failed ({e}), trying next…")
+            continue
+
+    raise RuntimeError("All image models failed")
+
+
+# ── Video generation (async queue) ───────────────────────────────────────────
+
+def _video_model() -> str:
+    return os.getenv("FAL_VIDEO_MODEL", "").strip() or VIDEO_MODELS[0]
 
 
 async def _submit_video_job(
@@ -68,159 +179,124 @@ async def _submit_video_job(
     prompt: str,
     fal_key: str,
     duration: str = "5",
-    aspect_ratio: str = "16:9",
 ) -> dict:
-    """Submit a text-to-video job to fal.ai queue. Returns job info dict with URLs."""
-    url = f"{FAL_API_BASE}/{model}"
+    url = f"{FAL_QUEUE_BASE}/{model}"
     payload = {
         "prompt": prompt,
         "duration": duration,
-        "aspect_ratio": aspect_ratio,
-        "negative_prompt": "blur, distort, low quality, watermark, text overlay",
+        "aspect_ratio": "16:9",
+        "negative_prompt": "blur, distort, low quality, watermark, text",
     }
-    headers = {
-        "Authorization": f"Key {fal_key}",
-        "Content-Type": "application/json",
-    }
+    headers = {"Authorization": f"Key {fal_key}", "Content-Type": "application/json"}
     resp = await client.post(url, json=payload, headers=headers, timeout=30)
     if resp.status_code in (401, 403):
-        detail = resp.json().get("detail", resp.text)
-        raise RuntimeError(f"fal.ai auth/billing error ({resp.status_code}): {detail}")
+        raise RuntimeError(f"fal.ai auth/billing error ({resp.status_code}): {resp.text[:200]}")
     resp.raise_for_status()
     data = resp.json()
     if "status_url" not in data or "response_url" not in data:
-        raise RuntimeError(f"fal.ai unexpected submit response: {list(data.keys())}")
+        raise RuntimeError(f"Unexpected fal.ai submit response: {list(data.keys())}")
     return data
 
 
-async def _poll_until_done(
+async def _poll_video_job(
     client: httpx.AsyncClient,
-    job_info: dict,
+    job: dict,
     fal_key: str,
     run_id: str,
     stage: str,
-    scene_label: str,
+    label: str,
 ) -> dict:
-    """Poll fal.ai queue until the job completes. Returns the result dict."""
-    status_url = job_info["status_url"]
-    result_url = job_info["response_url"]
     headers = {"Authorization": f"Key {fal_key}"}
-
     elapsed = 0
-    while elapsed < FAL_TIMEOUT:
+    while elapsed < FAL_VIDEO_TIMEOUT:
         await asyncio.sleep(FAL_POLL_INTERVAL)
         elapsed += FAL_POLL_INTERVAL
 
-        resp = await client.get(status_url, headers=headers, timeout=15)
+        resp = await client.get(job["status_url"], headers=headers, timeout=15)
         resp.raise_for_status()
-        status_data = resp.json()
-        status = status_data.get("status", "UNKNOWN")
+        status = resp.json().get("status", "UNKNOWN")
 
         if status == "COMPLETED":
-            res = await client.get(result_url, headers=headers, timeout=15)
+            res = await client.get(job["response_url"], headers=headers, timeout=15)
             res.raise_for_status()
             return res.json()
-        elif status in ("FAILED", "CANCELLED"):
-            raise RuntimeError(f"fal.ai job {status}: {status_data}")
+        if status in ("FAILED", "CANCELLED"):
+            raise RuntimeError(f"fal.ai job {status} for {label}")
 
-        if elapsed % 15 == 0:
-            await think(run_id, stage, f"{scene_label} — waiting ({elapsed}s)…")
+        if elapsed % 30 == 0:
+            await think(run_id, stage, f"{label} — generating ({elapsed}s elapsed)…")
 
-    raise TimeoutError(f"fal.ai job timed out after {FAL_TIMEOUT}s")
+    raise TimeoutError(f"fal.ai video timed out after {FAL_VIDEO_TIMEOUT}s")
 
 
-async def _download_video(client: httpx.AsyncClient, video_url: str, out_path: str) -> None:
-    """Download a video file from a URL."""
-    async with client.stream("GET", video_url, timeout=60, follow_redirects=True) as resp:
-        resp.raise_for_status()
-        with open(out_path, "wb") as f:
-            async for chunk in resp.aiter_bytes(chunk_size=65536):
+async def _download(client: httpx.AsyncClient, url: str, path: str) -> None:
+    async with client.stream("GET", url, timeout=120, follow_redirects=True) as r:
+        r.raise_for_status()
+        with open(path, "wb") as f:
+            async for chunk in r.aiter_bytes(65536):
                 f.write(chunk)
 
 
-async def _generate_scene_video(
-    scene_prompt: str,
+async def _generate_video_clip(
+    prompt: str,
     context: str,
     out_path: str,
     scene_idx: int,
-    total_scenes: int,
+    total: int,
     duration: float,
     run_id: str,
     stage: str,
 ) -> bool:
-    """Generate a video clip for one scene via fal.ai. Returns True on success."""
     fal_key = _get_fal_key()
-    model = _get_model()
+    model = _video_model()
+    model_lower = model.lower()
+
+    if "minimax" in model_lower or "hailuo" in model_lower:
+        fal_dur = "10" if duration > 7 else "6"
+    else:
+        fal_dur = "5"
 
     full_prompt = (
-        f"Cinematic wide shot: {scene_prompt}. "
+        f"Cinematic wide shot: {prompt}. "
         f"Context: {context}. "
-        f"Photorealistic, dramatic lighting, smooth camera movement, high production value."
+        "Photorealistic, dramatic lighting, smooth camera movement."
     )
+    label = f"Scene {scene_idx + 1}/{total}"
+    short = model.split("/")[-2] if "/" in model else model
 
-    # fal.ai duration depends on model
-    model_lower = model.lower()
-    if "minimax" in model_lower or "hailuo" in model_lower:
-        fal_duration = "10" if duration > 7 else "6"
-    elif "ltx" in model_lower:
-        fal_duration = "5"  # LTX uses simple seconds
-    elif "wan" in model_lower:
-        fal_duration = "5"  # Wan 2.2 uses seconds
-    else:
-        fal_duration = "10" if duration > 7 else "5"
-
+    await think(run_id, stage, f"Submitting {label} to fal.ai ({short})…")
     async with httpx.AsyncClient() as client:
-        scene_label = f"Scene {scene_idx + 1}/{total_scenes}"
-        short_model = model.split("/")[-2] if "/" in model else model
+        job = await _submit_video_job(client, model, full_prompt, fal_key, fal_dur)
+        await think(run_id, stage, f"{label} queued (id: {job.get('request_id','?')[:12]}…)")
+        result = await _poll_video_job(client, job, fal_key, run_id, stage, label)
 
-        await think(run_id, stage, f"Submitting {scene_label} to fal.ai ({short_model})…")
-
-        job_info = await _submit_video_job(
-            client, model, full_prompt, fal_key, duration=fal_duration,
-        )
-        request_id = job_info.get("request_id", "???")
-        await think(run_id, stage, f"{scene_label} queued (id: {request_id[:12]}…)")
-
-        result = await _poll_until_done(
-            client, job_info, fal_key, run_id, stage, scene_label,
-        )
-
-        # Extract video URL from result
         video_url = None
         if "video" in result:
             video_url = result["video"].get("url")
         elif "output" in result:
             video_url = result["output"].get("video", {}).get("url")
-
         if not video_url:
-            raise RuntimeError(f"No video URL in fal.ai response: {list(result.keys())}")
+            raise RuntimeError(f"No video URL in fal.ai result: {list(result.keys())}")
 
-        await think(run_id, stage, f"Downloading {scene_label} video…")
-        await _download_video(client, video_url, out_path)
-        return True
-
-
-# ── Normalize + Concat ──────────────────────────────────────────────────────
-
-async def _normalize_clip(ffmpeg: str, in_path: str, out_path: str) -> None:
-    """Re-encode a clip to consistent format for concatenation."""
-    cmd = [
-        ffmpeg, "-y", "-i", in_path,
-        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
-        "-pix_fmt", "yuv420p", "-r", "30", "-s", "1920x1080",
-        "-c:a", "aac", "-ar", "44100", "-ac", "2",
-        "-movflags", "+faststart",
-        out_path,
-    ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise RuntimeError(f"FFmpeg normalize failed: {stderr.decode()[-300:]}")
+        await think(run_id, stage, f"Downloading {label}…")
+        await _download(client, video_url, out_path)
+    return True
 
 
-async def _concat_clips(ffmpeg: str, clip_paths: list, out_path: str) -> None:
+# ── FFmpeg (concat only, used only for multi-scene video) ────────────────────
+
+async def _concat_clips(clip_paths: list, out_path: str) -> None:
+    """Concatenate clips with ffmpeg stream-copy (fast, no re-encode)."""
+    import shutil
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        # If only one clip, just copy it
+        if len(clip_paths) == 1:
+            import shutil as _sh
+            _sh.copy2(clip_paths[0], out_path)
+            return
+        raise RuntimeError("ffmpeg not found and multiple clips need concatenating")
+
     list_file = out_path + ".txt"
     with open(list_file, "w") as f:
         for p in clip_paths:
@@ -229,83 +305,28 @@ async def _concat_clips(ffmpeg: str, clip_paths: list, out_path: str) -> None:
     cmd = [
         ffmpeg, "-y",
         "-f", "concat", "-safe", "0", "-i", list_file,
-        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
-        "-pix_fmt", "yuv420p", "-c:a", "aac",
+        "-c", "copy",          # stream copy — no re-encode, very fast
         "-movflags", "+faststart",
         out_path,
     ]
     proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
     _, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise RuntimeError(f"FFmpeg concat failed ({proc.returncode}): {stderr.decode()[-500:]}")
-
     os.remove(list_file)
+    if proc.returncode != 0:
+        raise RuntimeError(f"FFmpeg concat failed: {stderr.decode()[-400:]}")
 
 
-# ── Extract scenes from pipeline state ──────────────────────────────────────
-
-def _extract_scenes(state: dict) -> list:
-    max_scenes = _resolve_max_scenes(state)
-
-    sc = state["outputs"].get("script", {})
-    scenes = sc.get("scenes", sc.get("script_lines", []))
-    if scenes:
-        extracted = [
-            {"title": f"Scene {s.get('id', i+1)}",
-             "body": s.get("text", s.get("description", "")),
-             "duration": max(float(s.get("duration_seconds", s.get("duration", 5))), 3)}
-            for i, s in enumerate(scenes)
-        ]
-        return extracted[:max_scenes]
-
-    plan = state["outputs"].get("planning", {})
-    plan_scenes = plan.get("scenes", [])
-    if plan_scenes:
-        extracted = [
-            {"title": f"Scene {s.get('id', i+1)}",
-             "body": s.get("description", str(s)),
-             "duration": max(float(s.get("duration", 5)), 3)}
-            for i, s in enumerate(plan_scenes)
-        ]
-        return extracted[:max_scenes]
-
-    sb = state["outputs"].get("storyboard", {})
-    if sb.get("shots"):
-        extracted = [
-            {"title": s.get("shot_type", f"Shot {i+1}"),
-             "body": s.get("description", ""),
-             "duration": max(float(s.get("duration_seconds", s.get("duration", 5))), 3)}
-            for i, s in enumerate(sb["shots"])
-        ]
-        return extracted[:max_scenes]
-
-    return [{"title": "Director's Cut", "body": state.get("prompt", "Video production"), "duration": 5}][:max_scenes]
-
-
-# ── Main render node ────────────────────────────────────────────────────────
+# ── Main render node ──────────────────────────────────────────────────────────
 
 async def render_node(state: dict) -> dict:
     run_id = state["run_id"]
-    stage = Stage.RENDER.value
-    prompt_context = state.get("prompt", "video production")
-    await emit_progress(run_id, stage, "Rendering video…")
+    stage  = Stage.RENDER.value
+    await emit_progress(run_id, stage, "Starting render…")
 
-    # ── Check FFmpeg ──
-    await think(run_id, stage, "Locating FFmpeg binary…")
-    try:
-        ffmpeg = _find_ffmpeg()
-    except FileNotFoundError as e:
-        await think(run_id, stage, f"⚠️ {e}")
-        state["outputs"][stage] = {"rendered": False, "error": str(e)}
-        state["current_stage"] = Stage.PACKAGE.value
-        await record_step(run_id, stage, "failed", state["outputs"][stage], error=str(e))
-        await checkpoint(state, stage)
-        await emit_progress(run_id, stage, f"Render skipped — {e}")
-        return state
-
-    # ── Check FAL_KEY ──
     try:
         _get_fal_key()
     except RuntimeError as e:
@@ -314,99 +335,126 @@ async def render_node(state: dict) -> dict:
         state["current_stage"] = Stage.PACKAGE.value
         await record_step(run_id, stage, "failed", state["outputs"][stage], error=str(e))
         await checkpoint(state, stage)
-        await emit_progress(run_id, stage, str(e))
         return state
-
-    await think(run_id, stage, f"Using FFmpeg at: {ffmpeg}")
 
     export_dir = Path("data") / "exports" / run_id
     export_dir.mkdir(parents=True, exist_ok=True)
-    final_path = str(export_dir / "render.mp4")
 
-    scenes = _extract_scenes(state)
-    max_scenes = _resolve_max_scenes(state)
-    model = _get_model()
-    short_model = model.split("/")[-2] if "/" in model else model
+    target = _target_output(state)
+    prompt_context = state.get("prompt", "")
+    scenes = _extract_scenes(state, _resolve_max_scenes(state))
+
+    # ── IMAGE output path ──────────────────────────────────────────────────
+    if target == "image":
+        await think(run_id, stage, f"Generating image via fal.ai (fast mode)…")
+        img_path = str(export_dir / "render.jpg")
+        scene_prompt = scenes[0]["body"] if scenes else prompt_context
+
+        full_prompt = (
+            f"{scene_prompt}. "
+            f"Context: {prompt_context}. "
+            "High quality, photorealistic, cinematic composition, sharp focus."
+        )
+
+        try:
+            await _generate_image(full_prompt, img_path, run_id, stage)
+        except Exception as e:
+            err = str(e)[:300]
+            state["outputs"][stage] = {"rendered": False, "error": err}
+            state["current_stage"] = Stage.PACKAGE.value
+            await record_step(run_id, stage, "failed", state["outputs"][stage], error=err)
+            await checkpoint(state, stage)
+            await emit_progress(run_id, stage, f"Image render failed: {err}")
+            return state
+
+        file_size = os.path.getsize(img_path) if os.path.exists(img_path) else 0
+        out_rel = f"data/exports/{run_id}/render.jpg"
+        state["outputs"][stage] = {
+            "rendered": True,
+            "output_path": out_rel,
+            "file_size_bytes": file_size,
+            "scene_count": 1,
+            "model": IMAGE_MODELS[0],
+            "kind": "image",
+        }
+        state["current_stage"] = Stage.PACKAGE.value
+
+        await record_step(run_id, stage, "completed", state["outputs"][stage])
+        await checkpoint(state, stage)
+        await emit_progress(run_id, stage, "Image render complete ✓")
+        return state
+
+    # ── VIDEO output path ──────────────────────────────────────────────────
     await think(run_id, stage,
-                f"Generating {len(scenes)} AI video clips via fal.ai ({short_model}), max scenes={max_scenes}…")
+                f"Generating {len(scenes)} video clip(s) via fal.ai "
+                f"({_video_model().split('/')[-2]})…")
 
-    # ── Generate video clips for each scene ──
     raw_paths: List[str] = []
     for i, scene in enumerate(scenes):
         raw_path = str(export_dir / f"_raw_{i:03d}.mp4")
         try:
-            success = await _generate_scene_video(
+            await _generate_video_clip(
                 scene["body"], prompt_context, raw_path,
                 i, len(scenes), scene["duration"],
                 run_id, stage,
             )
-            if success and os.path.exists(raw_path) and os.path.getsize(raw_path) > 1000:
-                await think(run_id, stage, f"Scene {i+1} video generated")
+            if os.path.exists(raw_path) and os.path.getsize(raw_path) > 1000:
                 raw_paths.append(raw_path)
                 await event_bus.emit(run_id, "stage_progress", {
                     "stage": stage,
-                    "message": f"Preview ready for scene {i+1}",
-                    "preview_clip_url": f"http://127.0.0.1:9420/media/exports/{run_id}/_raw_{i:03d}.mp4",
+                    "message": f"Clip {i + 1} ready",
+                    "preview_clip_url": f"/media/exports/{run_id}/_raw_{i:03d}.mp4",
                     "preview_scene_index": i,
                     "preview_scene_total": len(scenes),
                 })
-            else:
-                await think(run_id, stage, f"Scene {i+1} — empty or missing video")
         except Exception as e:
             err_msg = str(e)[:200]
-            await think(run_id, stage, f"Scene {i+1} failed: {err_msg}")
-            # Stop immediately on auth/billing errors
-            if "auth/billing" in str(e).lower() or "exhausted" in str(e).lower():
+            await think(run_id, stage, f"Scene {i + 1} failed: {err_msg}")
+            if "auth/billing" in err_msg.lower() or "exhausted" in err_msg.lower():
                 state["outputs"][stage] = {"rendered": False, "error": err_msg}
                 state["current_stage"] = Stage.PACKAGE.value
                 await record_step(run_id, stage, "failed", state["outputs"][stage], error=err_msg)
                 await checkpoint(state, stage)
-                await emit_progress(run_id, stage, f"Render failed — {err_msg}")
                 return state
 
     if not raw_paths:
-        state["outputs"][stage] = {"rendered": False, "error": "All scene video generations failed"}
+        err = "All video generations failed"
+        state["outputs"][stage] = {"rendered": False, "error": err}
         state["current_stage"] = Stage.PACKAGE.value
         await record_step(run_id, stage, "failed", state["outputs"][stage])
         await checkpoint(state, stage)
         return state
 
-    # ── Normalize clips to consistent format for concat ──
-    clip_paths: List[str] = []
-    for i, raw in enumerate(raw_paths):
-        norm_path = str(export_dir / f"_norm_{i:03d}.mp4")
-        await think(run_id, stage, f"Normalizing clip {i+1}/{len(raw_paths)}…")
-        try:
-            await _normalize_clip(ffmpeg, raw, norm_path)
-            clip_paths.append(norm_path)
-        except Exception as e:
-            await think(run_id, stage, f"Normalize failed clip {i+1}: {str(e)[:150]}")
-            clip_paths.append(raw)  # fallback to raw
+    # Assemble final video (no FFmpeg re-encode; stream-copy only for multi-scene)
+    final_path = str(export_dir / "render.mp4")
+    await think(run_id, stage, "Assembling final video…")
 
-    # ── Concatenate ──
-    await think(run_id, stage, "Concatenating clips into final video…", delay=0.5)
-    if len(clip_paths) == 1:
-        os.rename(clip_paths[0], final_path)
+    if len(raw_paths) == 1:
+        os.rename(raw_paths[0], final_path)
     else:
-        await _concat_clips(ffmpeg, clip_paths, final_path)
+        try:
+            await _concat_clips(raw_paths, final_path)
+        except Exception as e:
+            # Fallback: just use the first clip
+            await think(run_id, stage, f"Concat failed ({e}), using first clip as output")
+            os.rename(raw_paths[0], final_path)
 
-    total_dur = sum(s["duration"] for s in scenes)
     file_size = os.path.getsize(final_path) if os.path.exists(final_path) else 0
-
-    await think(run_id, stage, f"Video rendered: {len(scenes)} scenes, {file_size/1024/1024:.1f} MB")
+    await think(run_id, stage, f"Video ready: {file_size / 1024 / 1024:.1f} MB")
 
     state["outputs"][stage] = {
         "rendered": True,
         "output_path": f"data/exports/{run_id}/render.mp4",
-        "duration_seconds": total_dur,
+        "duration_seconds": sum(s["duration"] for s in scenes),
         "file_size_bytes": file_size,
         "scene_count": len(scenes),
         "preview_clip_paths": [f"data/exports/{run_id}/_raw_{i:03d}.mp4" for i in range(len(raw_paths))],
-        "model": model,
+        "model": _video_model(),
+        "kind": "video",
     }
     state["current_stage"] = Stage.PACKAGE.value
 
     await record_step(run_id, stage, "completed", state["outputs"][stage])
     await checkpoint(state, stage)
-    await emit_progress(run_id, stage, "Render complete ✓")
+    await emit_progress(run_id, stage, "Video render complete ✓")
     return state

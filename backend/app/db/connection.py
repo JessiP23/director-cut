@@ -81,7 +81,7 @@ _SCHEMA: list[str] = [
         recoverable INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL DEFAULT ''
     )""",
-    """CREATE TABLE IF NOT EXISTS checkpoints (
+    """CREATE TABLE IF NOT EXISTS run_checkpoints (
         id TEXT PRIMARY KEY,
         run_id TEXT NOT NULL REFERENCES runs(id),
         stage TEXT NOT NULL,
@@ -139,6 +139,24 @@ _SCHEMA: list[str] = [
     )""",
 ]
 
+# Idempotent patches for Supabase DBs created before a column existed.
+# CREATE TABLE IF NOT EXISTS does not add new columns to existing tables.
+_SCHEMA_MIGRATIONS: list[str] = [
+    # Ensure run_steps has output_json (may be missing on older DBs).
+    "ALTER TABLE run_steps ADD COLUMN IF NOT EXISTS output_json TEXT DEFAULT '{}'",
+    # The legacy `checkpoints` table is a LangGraph table with a composite PK on
+    # (thread_id, checkpoint_ns, checkpoint_id).  Our code uses `run_checkpoints`
+    # instead to avoid any conflict.  Create it here for any DB that was initialised
+    # before the _SCHEMA list was updated.
+    """CREATE TABLE IF NOT EXISTS run_checkpoints (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES runs(id),
+        stage TEXT NOT NULL,
+        state_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT ''
+    )""",
+]
+
 
 def get_pool() -> asyncpg.Pool:
     """Return the active connection pool. Raises if init_db() was not called."""
@@ -160,6 +178,8 @@ async def init_db() -> asyncpg.Pool:
     _pool = await asyncpg.create_pool(url, min_size=1, max_size=10)
     async with _pool.acquire() as conn:
         for stmt in _SCHEMA:
+            await conn.execute(stmt)
+        for stmt in _SCHEMA_MIGRATIONS:
             await conn.execute(stmt)
     return _pool
 
