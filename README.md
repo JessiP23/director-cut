@@ -276,3 +276,15 @@ MIT
 
 ## command to run the deployment for the base url for the mcp
 - fly deploy -a director-cut
+
+## Run persistence
+
+Runs are persisted in **Supabase Postgres** via asyncpg — there is no local SQLite file and no ephemeral in-memory state. Every status transition (pending → running → completed/failed) is written to the database immediately, so Fly machine restarts cannot lose a run.
+
+To configure the database connection before deploying:
+
+```bash
+fly secrets set DATABASE_URL="postgresql://postgres:<password>@db.<project>.supabase.co:5432/postgres"
+```
+
+On startup the backend also recovers any runs that were left in `running` or `awaiting_approval` state by a previous process, marking them `failed` with `error=process_restart`.

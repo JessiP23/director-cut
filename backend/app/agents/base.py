@@ -4,28 +4,35 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from datetime import datetime
 from typing import Optional
-from app.db.connection import get_db
+
+from app.db.connection import get_pool
 from app.db.repository import CheckpointRepository
 from app.runtime.event_bus import event_bus
 from app.runtime.logger import get_logger
 
 
 async def checkpoint(state: dict, stage: str):
-    """Persist current state to SQLite."""
+    """Persist current state to Postgres."""
     repo = CheckpointRepository()
     await repo.save(state["run_id"], stage, state)
 
 
-async def record_step(run_id: str, stage: str, status: str, output: Optional[dict] = None, error: Optional[str] = None):
-    db = await get_db()
-    await db.execute(
-        "INSERT INTO run_steps (id, run_id, stage, status, output_json, error, started_at) "
-        "VALUES (?,?,?,?,?,?,datetime('now'))",
-        (uuid.uuid4().hex, run_id, stage, status, json.dumps(output or {}), error),
+async def record_step(
+    run_id: str,
+    stage: str,
+    status: str,
+    output: Optional[dict] = None,
+    error: Optional[str] = None,
+):
+    pool = get_pool()
+    now = datetime.utcnow().isoformat()
+    await pool.execute(
+        "INSERT INTO run_steps (id, run_id, stage, status, output_json, error, started_at)"
+        " VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        uuid.uuid4().hex, run_id, stage, status, json.dumps(output or {}), error, now,
     )
-    await db.commit()
-    await db.close()
 
 
 async def emit_progress(run_id: str, stage: str, message: str):

@@ -2,6 +2,10 @@
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
+# DATABASE_URL must be set as a Fly secret (NOT hardcoded here):
+#   fly secrets set DATABASE_URL="postgresql://postgres:<password>@db.<project>.supabase.co:5432/postgres"
+#
+# Runs are persisted in Supabase Postgres — no local SQLite file, no ephemeral state.
 
 app = 'director-cut'
 primary_region = 'ord'

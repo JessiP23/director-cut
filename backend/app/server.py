@@ -13,6 +13,10 @@ from urllib.parse import urlencode
 # ── Inline env layering (reads wmstudio .env when WMSTUDIO_PROJECT_ROOT is set)
 ENV_FILES_TRIED: list[str] = []
 
+# Keys that were already in the process environment before any .env file is loaded.
+# These must never be overridden by .env files.
+_PROCESS_ENV_KEYS: frozenset[str] = frozenset(os.environ.keys())
+
 
 def _record_try(p: Path) -> None:
     try:
@@ -22,14 +26,21 @@ def _record_try(p: Path) -> None:
 
 
 def _apply_env_lines(text: str) -> None:
-    """Merge keys so later-loaded files override earlier, but don't overwrite existing env."""
+    """Merge keys from a .env file.
+
+    Rules:
+    - Never overwrite a key that was in the process environment at startup
+      (e.g. a real shell export or CI secret already wins).
+    - Later / more-specific .env files DO override earlier / less-specific ones
+      (backend/.env beats wmstudio/.env for director-specific keys like DATABASE_URL).
+    """
     for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, val = line.partition("=")
         k, v = key.strip(), val.strip()
-        if k and k not in os.environ:
+        if k and k not in _PROCESS_ENV_KEYS:
             os.environ[k] = v
 
 def load_layered_env_once() -> None:
@@ -76,22 +87,60 @@ load_layered_env_once()
 import sys
 print(f"[DIRECTOR_PYTHON] SUPABASE_URL from env: {os.getenv('NEXT_PUBLIC_SUPABASE_URL')}", file=sys.stderr, flush=True)
 
+import time  # noqa: E402
+import uuid as _uuid  # noqa: E402
+
 from fastapi import FastAPI, Request, HTTPException  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import HTMLResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
+from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
+from starlette.responses import Response  # noqa: E402
 
 import httpx  # noqa: E402
 from html import escape  # noqa: E402
 
+from app.runtime.logger import get_logger as _get_logger  # noqa: E402
+_req_log = _get_logger("http.request")
+
 
 @asynccontextmanager
 async def director_cut_lifespan(app: FastAPI):
-    """Restore DB settings into env and tie in the FastMCP Streamable HTTP lifespan."""
-    from app.db.connection import get_db
+    """Initialise Postgres pool, restore DB settings into env, and tie in the FastMCP lifespan."""
+    from app.db.connection import init_db, close_pool
 
-    db = await get_db()
-    await db.close()
+    try:
+        await init_db()
+    except Exception as e:
+        print(f"⚠️ Database init failed: {e}  — check DATABASE_URL secret.")
+        raise
+
+    # Recover any runs left in 'running'/'awaiting_approval' by a previous process restart.
+    try:
+        from app.db.connection import get_pool
+        import uuid as _uuid_mod
+        from datetime import datetime as _dt
+        pool = get_pool()
+        now = _dt.utcnow().isoformat()
+        stuck_rows = await pool.fetch(
+            "SELECT id FROM runs WHERE status IN ('running', 'awaiting_approval')"
+        )
+        if stuck_rows:
+            stuck_ids = [r["id"] for r in stuck_rows]
+            await pool.execute(
+                "UPDATE runs SET status='failed', updated_at=$1"
+                " WHERE id = ANY($2::text[])",
+                now, stuck_ids,
+            )
+            await pool.executemany(
+                "INSERT INTO errors (id, run_id, message, recoverable, created_at)"
+                " VALUES ($1, $2, 'process_restart', 0, $3)",
+                [(_uuid_mod.uuid4().hex, rid, now) for rid in stuck_ids],
+            )
+            print(f"🔄 Recovered {len(stuck_ids)} stuck run(s) → status=failed (process_restart)")
+    except Exception as e:
+        print(f"⚠️ Could not recover stuck runs: {e}")
+
     try:
         from app.db.repository import SettingsRepository
 
@@ -124,12 +173,48 @@ async def director_cut_lifespan(app: FastAPI):
     from app.mcp_server import get_or_build_mcp_starlette
 
     mcp_starlette = get_or_build_mcp_starlette()
-    async with mcp_starlette.lifespan(app):
-        yield
+    try:
+        async with mcp_starlette.lifespan(app):
+            yield
+    finally:
+        await close_pool()
 
 
 app = FastAPI(title="Director's Cut", version="0.1.0", lifespan=director_cut_lifespan)
 
+class RequestLogMiddleware(BaseHTTPMiddleware):
+    """Attach request_id and emit structured access logs (no secrets)."""
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        request_id = request.headers.get("x-request-id") or _uuid.uuid4().hex
+        request.state.request_id = request_id
+        t0 = time.perf_counter()
+        try:
+            response: Response = await call_next(request)
+        except Exception:
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            _req_log.error(
+                "request_unhandled_error",
+                request_id=request_id,
+                method=request.method,
+                path=request.url.path,
+                elapsed_ms=elapsed_ms,
+            )
+            raise
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        _req_log.info(
+            "request",
+            request_id=request_id,
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            elapsed_ms=elapsed_ms,
+        )
+        response.headers["x-request-id"] = request_id
+        return response
+
+
+app.add_middleware(RequestLogMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -181,6 +266,8 @@ PUBLIC_PATH_EXACT = frozenset(
         "/api/auth/desktop-oauth-bridge",
         "/api/auth/oauth/start",
         "/api/auth/oauth/complete",
+        # Stateless brief-expansion — mcp-director calls this without an MCP session.
+        "/api/creative/brief-expand",
     }
 )
 
@@ -528,7 +615,7 @@ async def health():
 
 # ── Protected API routers
 
-from app.routes import projects, runs, artifacts, approvals, settings, events  # noqa: E402
+from app.routes import projects, runs, artifacts, approvals, settings, events, creative  # noqa: E402
 
 app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
 app.include_router(runs.router, prefix="/api/runs", tags=["runs"])
@@ -536,6 +623,7 @@ app.include_router(artifacts.router, prefix="/api/artifacts", tags=["artifacts"]
 app.include_router(approvals.router, prefix="/api/approvals", tags=["approvals"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(events.router, prefix="/api/events", tags=["events"])
+app.include_router(creative.router, prefix="/api/creative", tags=["creative"])
 
 @app.get("/mcp/health")
 async def mcp_health_standalone():

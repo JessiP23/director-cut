@@ -274,6 +274,119 @@ The anon key is **public by design** in many Supabase apps, but treat deployment
 
 ---
 
+---
+
+## mcp-director migration note
+
+**Problem fixed:** `POST /mcp` requires a stateful Streamable HTTP session ID. When mcp-director calls it without one it gets `400 Bad Request: Missing session ID`.
+
+**Solution:** call `POST /api/creative/brief-expand` instead — no session, no MCP handshake.
+
+```
+mcp-director should call:
+  POST https://director-cut.fly.dev/api/creative/brief-expand
+
+NOT:
+  POST https://director-cut.fly.dev/mcp  ← requires session ID
+```
+
+### Endpoint contract
+
+```
+POST /api/creative/brief-expand
+Authorization: Bearer <Supabase access token>
+Content-Type: application/json
+```
+
+**Request:**
+
+```json
+{
+  "brief": "A 30-second brand story for our sustainable coffee brand.",
+  "style": "cinematic",
+  "duration_target_seconds": 30,
+  "platform": "instagram",
+  "content_type": "video"
+}
+```
+
+| Field | Type | Required | Constraints |
+|-------|------|----------|-------------|
+| `brief` | string | yes | 1–8000 chars, non-blank |
+| `style` | string | no | default `"cinematic"` |
+| `duration_target_seconds` | int | no | 5–600, default 60 |
+| `platform` | string | no | default `"general"` |
+| `content_type` | `"video"` \| `"image"` | no | default `"video"` |
+
+**Response (200):**
+
+```json
+{
+  "request_id": "a3f9c2...",
+  "simulated": false,
+  "settings": {
+    "max_scenes": 4,
+    "target_length_seconds": 30,
+    "style": "cinematic",
+    "platform": "instagram",
+    "content_type": "video",
+    "tone": "professional",
+    "aspect_ratio": "16:9"
+  },
+  "production_plan": "Open with product close-up; cut to testimonials; close with logo."
+}
+```
+
+- `simulated: true` when no LLM key is configured — use for dev only.
+- `request_id` echoed in `x-request-id` response header.
+- **422** — validation error (missing `brief`, blank, out-of-range duration, invalid `content_type`).
+- **502** — LLM upstream failure; body: `{"detail": {"error": "llm_unavailable", "request_id": "…"}}`.
+
+---
+
+### Run outputs: stable asset URLs
+
+`GET /api/runs/{run_id}/outputs` now returns explicit asset URL fields (absolute, ready for mcp-director polling):
+
+```json
+{
+  "run_id": "…",
+  "status": "completed",
+  "current_stage": "done",
+  "outputs": { … },
+  "artifact_ids": [ … ],
+  "video_url": "https://director-cut.fly.dev/media/exports/{run_id}/render.mp4",
+  "preview_urls": ["https://director-cut.fly.dev/media/exports/{run_id}/_raw_000.mp4"],
+  "image_urls": []
+}
+```
+
+- `video_url` — final rendered video (null if pipeline hasn't reached render stage).
+- `preview_urls` — intermediate clip previews (may be empty).
+- `image_urls` — generated image artifacts (may be empty).
+- URLs are absolute using `x-forwarded-proto` / `x-forwarded-host` headers from Fly, so they resolve correctly on any hostname.
+
+---
+
+### Required env vars for hosted deployment
+
+| Var | Required | Purpose |
+|-----|----------|---------|
+| `NEXT_PUBLIC_SUPABASE_URL` | yes | Validate user JWTs |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | yes | Validate user JWTs |
+| `GROQ_API_KEY` | yes (or `OPENROUTER_API_KEY`) | LLM calls including brief-expand |
+| `FAL_KEY` | yes for video gen | fal.ai image/video generation |
+| `DIRECTOR_DB` | recommended | Point at a Fly volume path e.g. `/data/director_cut.sqlite` |
+| `PORT` | yes on Fly | Must match `http_service.internal_port` in fly.toml (set to `8080`) |
+
+### Persistence expectations
+
+- All run state (runs, checkpoints, artifacts) is written to SQLite immediately on creation — **no in-memory-only records**.
+- On Fly without a **volume**, the SQLite file lives in the ephemeral container filesystem and is lost on reschedule.
+- For production: attach a Fly volume and set `DIRECTOR_DB=/data/director_cut.sqlite`.
+
+---
+
 ## Related
 
 - [MCP_INTEGRATION.md](../MCP_INTEGRATION.md) — local MCP URL and auth notes

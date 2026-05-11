@@ -5,16 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import tempfile
 import uuid
-from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
-
-_tmp = tempfile.NamedTemporaryFile(prefix="mcp_test_", suffix=".sqlite", delete=False)
-_tmp.close()
-os.environ["DIRECTOR_DB"] = _tmp.name
 
 os.environ.setdefault("NEXT_PUBLIC_SUPABASE_URL", "http://supabase.test")
 os.environ.setdefault("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key")
@@ -132,17 +126,22 @@ def test_run_list_empty_ok(api_client):
 
 
 def test_run_create_inserts_run(api_client):
-    from app.db.connection import get_db
+    import os
+    if not os.getenv("DATABASE_URL"):
+        pytest.skip("DATABASE_URL not set — skipping DB integration test")
+
+    from app.db.connection import get_pool
+    from datetime import datetime
 
     async def seed():
-        db = await get_db()
+        pool = get_pool()
         pid = uuid.uuid4().hex
-        await db.execute(
-            "INSERT INTO projects (id,name,description,created_at,updated_at) VALUES (?,?,?,datetime('now'),datetime('now'))",
-            (pid, "MCP Test", ""),
+        now = datetime.utcnow().isoformat()
+        await pool.execute(
+            "INSERT INTO projects (id, name, description, created_at, updated_at)"
+            " VALUES ($1, $2, $3, $4, $5)",
+            pid, "MCP Test", "", now, now,
         )
-        await db.commit()
-        await db.close()
         return pid
 
     pid = asyncio.run(seed())

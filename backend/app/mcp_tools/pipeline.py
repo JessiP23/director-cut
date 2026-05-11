@@ -11,7 +11,7 @@ from app.schemas.project import ProjectCreate
 from app.schemas.run import RunCreate, Stage
 from app.graph.engine import NODE_MAP, STAGE_ORDER, cancel_run as engine_cancel_run, pipeline_task_active
 from app.db.repository import CheckpointRepository, ProjectRepository
-from app.db.connection import get_db
+from app.db.connection import get_pool
 
 
 def _stage_values() -> frozenset[str]:
@@ -19,34 +19,26 @@ def _stage_values() -> frozenset[str]:
 
 
 async def _run_row(run_id: str) -> dict | None:
-    db = await get_db()
-    try:
-        cur = await db.execute("SELECT * FROM runs WHERE id=?", (run_id,))
-        row = await cur.fetchone()
-        return dict(row) if row else None
-    finally:
-        await db.close()
+    pool = get_pool()
+    row = await pool.fetchrow("SELECT * FROM runs WHERE id=$1", run_id)
+    return dict(row) if row else None
 
 
 async def _run_summaries(limit: int, project_id: str | None) -> list[dict]:
-    db = await get_db()
-    try:
-        if project_id:
-            cur = await db.execute(
-                "SELECT id, project_id, prompt, status, current_stage, created_at, updated_at FROM runs "
-                "WHERE project_id=? ORDER BY created_at DESC LIMIT ?",
-                (project_id, limit),
-            )
-        else:
-            cur = await db.execute(
-                "SELECT id, project_id, prompt, status, current_stage, created_at, updated_at FROM runs "
-                "ORDER BY created_at DESC LIMIT ?",
-                (limit,),
-            )
-        rows = await cur.fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        await db.close()
+    pool = get_pool()
+    if project_id:
+        rows = await pool.fetch(
+            "SELECT id, project_id, prompt, status, current_stage, created_at, updated_at"
+            " FROM runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT $2",
+            project_id, limit,
+        )
+    else:
+        rows = await pool.fetch(
+            "SELECT id, project_id, prompt, status, current_stage, created_at, updated_at"
+            " FROM runs ORDER BY created_at DESC LIMIT $1",
+            limit,
+        )
+    return [dict(r) for r in rows]
 
 
 def register_pipeline_tools(mcp: FastMCP) -> None:

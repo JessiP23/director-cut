@@ -443,6 +443,20 @@ async function applyDirectorSession(session) {
   await refreshAppShell();
 }
 
+async function waitForBackend(timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await invoke("api_request", { method: "GET", path: "/health", body: null, authorization: null });
+      return true; // backend responded
+    } catch (_) {
+      // not ready yet — keep polling
+    }
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  return false; // timed out
+}
+
 async function bootstrapBackendAndAuthConfig() {
   try {
     await invoke("stop_backend");
@@ -461,7 +475,15 @@ async function bootstrapBackendAndAuthConfig() {
   backendRunning = true;
   document.getElementById("backend-status-dot")?.classList.add("online");
   document.getElementById("backend-label").textContent = "Engine Running";
-  await new Promise((r) => setTimeout(r, 900));
+
+  // Poll /health until the backend is ready (DB pool init can take a few seconds).
+  const ready = await waitForBackend(20000);
+  if (!ready) {
+    console.error("[DIRECTOR_BOOT] Backend did not become healthy within 20s");
+    toast("Backend took too long to start — check logs.", "error");
+    return;
+  }
+
   const cfg = await rawApi("GET", "/api/auth/config", null, null);
   authCfg = cfg;
   console.log(

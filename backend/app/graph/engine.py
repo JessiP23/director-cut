@@ -11,11 +11,12 @@ import asyncio
 import json
 import traceback
 import uuid
+from datetime import datetime
 from typing import Dict, Optional
 
 from app.schemas.run import Stage, RunStatus, RunCreate
 from app.db.repository import CheckpointRepository
-from app.db.connection import get_db
+from app.db.connection import get_pool
 from app.runtime.event_bus import event_bus
 from app.runtime.logger import get_logger
 
@@ -89,16 +90,14 @@ async def start_run_async(run_id: str, body: RunCreate):
 
 async def submit_approval(run_id: str, stage: str, decision: str, notes: str = ""):
     """Called by the approval route to unblock a paused pipeline."""
-    # Persist the decision
-    db = await get_db()
-    await db.execute(
-        "INSERT INTO approvals (id, run_id, stage, decision, notes) VALUES (?,?,?,?,?)",
-        (uuid.uuid4().hex, run_id, stage, decision, notes),
+    pool = get_pool()
+    now = datetime.utcnow().isoformat()
+    await pool.execute(
+        "INSERT INTO approvals (id, run_id, stage, decision, notes, created_at)"
+        " VALUES ($1, $2, $3, $4, $5, $6)",
+        uuid.uuid4().hex, run_id, stage, decision, notes, now,
     )
-    await db.commit()
-    await db.close()
 
-    # Resolve the future the pipeline is awaiting
     fut = _approval_futures.pop(run_id, None)
     if fut and not fut.done():
         fut.set_result({"stage": stage, "decision": decision, "notes": notes})
@@ -113,13 +112,12 @@ async def cancel_run(run_id: str):
     task = _active_runs.pop(run_id, None)
     if task:
         task.cancel()
-    db = await get_db()
-    await db.execute(
-        "UPDATE runs SET status='cancelled', updated_at=datetime('now') WHERE id=?",
-        (run_id,),
+    pool = get_pool()
+    now = datetime.utcnow().isoformat()
+    await pool.execute(
+        "UPDATE runs SET status='cancelled', updated_at=$1 WHERE id=$2",
+        now, run_id,
     )
-    await db.commit()
-    await db.close()
 
 # ── Pipeline driver ────────────────────────────────────────────────────────
 
@@ -134,43 +132,34 @@ async def _execute(run_id: str, state: dict):
             stage_name = stage.value
             node_fn = NODE_MAP[stage]
 
-            # ── Update DB to current stage ──
-            db = await get_db()
-            await db.execute(
-                "UPDATE runs SET current_stage=?, status='running', "
-                "updated_at=datetime('now') WHERE id=?",
-                (stage_name, run_id),
+            pool = get_pool()
+            now = datetime.utcnow().isoformat()
+            await pool.execute(
+                "UPDATE runs SET current_stage=$1, status='running', updated_at=$2 WHERE id=$3",
+                stage_name, now, run_id,
             )
-            await db.commit()
-            await db.close()
 
-            # ── Emit "stage started" to SSE ──
             await event_bus.emit(run_id, "stage_start", {
                 "stage": stage_name,
                 "message": f"Starting {stage_name}…",
             })
 
-            # ── Run the agent node (with timeout) ──
-            # Render needs much longer for AI video generation
             stage_timeout = 1800 if stage == Stage.RENDER else 300
             try:
                 state = await asyncio.wait_for(node_fn(state), timeout=stage_timeout)
             except asyncio.TimeoutError:
                 raise RuntimeError(f"Stage {stage_name} timed out ({stage_timeout} s)")
 
-            # ── Emit "stage complete" to SSE ──
             await event_bus.emit(run_id, "stage_complete", {
                 "stage": stage_name,
                 "message": f"{stage_name} complete ✓",
             })
 
-            # ── Approval gate ──
             if stage in APPROVAL_GATES:
                 await _wait_for_approval(run_id, stage_name, state)
                 if state.get("cancelled"):
                     break
 
-        # All stages done (or cancelled)
         if state.get("cancelled"):
             await _cancel_run_db(run_id)
         else:
@@ -182,13 +171,12 @@ async def _execute(run_id: str, state: dict):
             "stage": "interrupt",
             "message": "Run cancelled by user.",
         })
-        db = await get_db()
-        await db.execute(
-            "UPDATE runs SET status='cancelled', updated_at=datetime('now') WHERE id=?",
-            (run_id,),
+        pool = get_pool()
+        now = datetime.utcnow().isoformat()
+        await pool.execute(
+            "UPDATE runs SET status='cancelled', updated_at=$1 WHERE id=$2",
+            now, run_id,
         )
-        await db.commit()
-        await db.close()
     except Exception as exc:
         log.error("run_failed", run_id=run_id, error=str(exc))
         traceback.print_exc()
@@ -205,16 +193,13 @@ async def _wait_for_approval(run_id: str, stage_name: str, state: dict):
         "message": f"{stage_name} – awaiting approval",
     })
 
-    db = await get_db()
-    await db.execute(
-        "UPDATE runs SET status='awaiting_approval', "
-        "updated_at=datetime('now') WHERE id=?",
-        (run_id,),
+    pool = get_pool()
+    now = datetime.utcnow().isoformat()
+    await pool.execute(
+        "UPDATE runs SET status='awaiting_approval', updated_at=$1 WHERE id=$2",
+        now, run_id,
     )
-    await db.commit()
-    await db.close()
 
-    # Create a future the approval route will resolve
     loop = asyncio.get_event_loop()
     fut = loop.create_future()
     _approval_futures[run_id] = fut
@@ -226,35 +211,29 @@ async def _wait_for_approval(run_id: str, stage_name: str, state: dict):
             state["cancelled"] = True
             return
     except asyncio.TimeoutError:
-        # Auto-approve so the pipeline keeps moving during development
         log.warning("auto_approve_timeout", run_id=run_id, stage=stage_name)
         state["approvals"][stage_name] = {
             "decision": "approve",
             "notes": "auto-approved (5 min timeout)",
         }
 
-    # Back to running
-    db = await get_db()
-    await db.execute(
-        "UPDATE runs SET status='running', updated_at=datetime('now') WHERE id=?",
-        (run_id,),
+    now2 = datetime.utcnow().isoformat()
+    await pool.execute(
+        "UPDATE runs SET status='running', updated_at=$1 WHERE id=$2",
+        now2, run_id,
     )
-    await db.commit()
-    await db.close()
 
 
 # ── Terminal helpers ───────────────────────────────────────────────────────
 
 
 async def _finish_run(run_id: str, state: dict):
-    db = await get_db()
-    await db.execute(
-        "UPDATE runs SET status='completed', current_stage='done', "
-        "updated_at=datetime('now') WHERE id=?",
-        (run_id,),
+    pool = get_pool()
+    now = datetime.utcnow().isoformat()
+    await pool.execute(
+        "UPDATE runs SET status='completed', current_stage='done', updated_at=$1 WHERE id=$2",
+        now, run_id,
     )
-    await db.commit()
-    await db.close()
     await event_bus.emit(run_id, "run_completed", {
         "run_id": run_id,
         "message": "Production complete.",
@@ -263,17 +242,17 @@ async def _finish_run(run_id: str, state: dict):
 
 
 async def _fail_run(run_id: str, error: str):
-    db = await get_db()
-    await db.execute(
-        "UPDATE runs SET status='failed', updated_at=datetime('now') WHERE id=?",
-        (run_id,),
+    pool = get_pool()
+    now = datetime.utcnow().isoformat()
+    await pool.execute(
+        "UPDATE runs SET status='failed', updated_at=$1 WHERE id=$2",
+        now, run_id,
     )
-    await db.execute(
-        "INSERT INTO errors (id, run_id, message, recoverable) VALUES (?,?,?,1)",
-        (uuid.uuid4().hex, run_id, error),
+    await pool.execute(
+        "INSERT INTO errors (id, run_id, message, recoverable, created_at)"
+        " VALUES ($1, $2, $3, 1, $4)",
+        uuid.uuid4().hex, run_id, error, now,
     )
-    await db.commit()
-    await db.close()
     await event_bus.emit(run_id, "run_failed", {
         "run_id": run_id,
         "error": error,
@@ -283,13 +262,12 @@ async def _fail_run(run_id: str, error: str):
 
 
 async def _cancel_run_db(run_id: str):
-    db = await get_db()
-    await db.execute(
-        "UPDATE runs SET status='cancelled', updated_at=datetime('now') WHERE id=?",
-        (run_id,),
+    pool = get_pool()
+    now = datetime.utcnow().isoformat()
+    await pool.execute(
+        "UPDATE runs SET status='cancelled', updated_at=$1 WHERE id=$2",
+        now, run_id,
     )
-    await db.commit()
-    await db.close()
     await event_bus.emit(run_id, "run_cancelled", {
         "run_id": run_id,
         "message": "Run cancelled.",
