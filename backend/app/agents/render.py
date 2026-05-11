@@ -206,11 +206,36 @@ async def _poll_video_job(
     stage: str,
     label: str,
 ) -> dict:
+    """Poll fal.ai queue until done.
+
+    Critically, we write a heartbeat to `runs.updated_at` every 30 s so that
+    the mcp-director stall detector (stall_seconds=120 on stage unchanged) sees
+    fresh timestamps and does not abort the run prematurely.
+    """
+    from app.db.connection import get_pool
+    from datetime import datetime
+
     headers = {"Authorization": f"Key {fal_key}"}
     elapsed = 0
+    last_heartbeat = 0
+
     while elapsed < FAL_VIDEO_TIMEOUT:
         await asyncio.sleep(FAL_POLL_INTERVAL)
         elapsed += FAL_POLL_INTERVAL
+
+        # Heartbeat: keep updated_at fresh so external stall detectors
+        # (mcp-director JobTracker.stall_seconds=120) don't abort the run.
+        if elapsed - last_heartbeat >= 30:
+            try:
+                pool = get_pool()
+                now = datetime.utcnow().isoformat()
+                await pool.execute(
+                    "UPDATE runs SET updated_at=$1 WHERE id=$2", now, run_id
+                )
+            except Exception:
+                pass
+            last_heartbeat = elapsed
+            await think(run_id, stage, f"{label} — generating ({elapsed}s elapsed)…")
 
         resp = await client.get(job["status_url"], headers=headers, timeout=15)
         resp.raise_for_status()
@@ -222,9 +247,6 @@ async def _poll_video_job(
             return res.json()
         if status in ("FAILED", "CANCELLED"):
             raise RuntimeError(f"fal.ai job {status} for {label}")
-
-        if elapsed % 30 == 0:
-            await think(run_id, stage, f"{label} — generating ({elapsed}s elapsed)…")
 
     raise TimeoutError(f"fal.ai video timed out after {FAL_VIDEO_TIMEOUT}s")
 
