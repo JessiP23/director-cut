@@ -744,7 +744,7 @@ dependencies = [
 
 [[package]]
 name = "director-cut"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "futures-util",
  "reqwest 0.12.28",
