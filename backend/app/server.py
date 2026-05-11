@@ -615,7 +615,7 @@ async def health():
 
 # ── Protected API routers
 
-from app.routes import projects, runs, artifacts, approvals, settings, events, creative  # noqa: E402
+from app.routes import projects, runs, artifacts, approvals, settings, events, creative, generate  # noqa: E402
 
 app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
 app.include_router(runs.router, prefix="/api/runs", tags=["runs"])
@@ -624,6 +624,7 @@ app.include_router(approvals.router, prefix="/api/approvals", tags=["approvals"]
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(events.router, prefix="/api/events", tags=["events"])
 app.include_router(creative.router, prefix="/api/creative", tags=["creative"])
+app.include_router(generate.router, prefix="/api/generate", tags=["generate"])
 
 @app.get("/mcp/health")
 async def mcp_health_standalone():
