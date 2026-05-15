@@ -228,6 +228,10 @@ _export_dir = Path(__file__).resolve().parent.parent / "data" / "exports"
 _export_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/media/exports", StaticFiles(directory=str(_export_dir)), name="exports")
 
+_upload_dir = Path(__file__).resolve().parent.parent / "data" / "uploads"
+_upload_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/media/uploads", StaticFiles(directory=str(_upload_dir)), name="uploads")
+
 
 async def validate_supabase_session(access_token: str) -> dict:
     """Same trust model as wmstudio: verify JWT against Supabase Auth (GoTrue user endpoint)."""
@@ -268,6 +272,9 @@ PUBLIC_PATH_EXACT = frozenset(
         "/api/auth/oauth/complete",
         # Stateless brief-expansion — mcp-director calls this without an MCP session.
         "/api/creative/brief-expand",
+        # Image upload page + API — public so anyone can upload a reference image.
+        "/upload",
+        "/api/generate/upload",
     }
 )
 
@@ -333,6 +340,11 @@ def _set_desktop_bridge_from_tokens(data: dict) -> None:
     }
 
 
+def _service_token() -> str:
+    """Shared secret used by mcp-director to call director-cut without Supabase auth."""
+    return (os.getenv("DIRECTOR_SERVICE_TOKEN") or "").strip()
+
+
 @app.middleware("http")
 async def require_wmstudio_auth(request: Request, call_next):
     if request.method == "OPTIONS":
@@ -341,22 +353,26 @@ async def require_wmstudio_auth(request: Request, call_next):
     if path in PUBLIC_PATH_EXACT or path == "/favicon.ico":
         return await call_next(request)
     if path.startswith("/media"):
-        # allow /media/exports/… for <video> tags (no Authorization header possible)
         return await call_next(request)
     if path.startswith("/mcp"):
-        # MCP performs its own Bearer checks (JSON-RPC -32001 Unauthorized).
         return await call_next(request)
 
     tok = extract_bearer_access_token(request)
     if not tok:
         from starlette.responses import JSONResponse
-
         return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+
+    # Service-to-service token: mcp-director uses this so requests don't depend
+    # on a per-user Supabase token that expires every hour.
+    svc = _service_token()
+    if svc and tok == svc:
+        request.state.director_user = {"id": "service", "role": "service"}
+        return await call_next(request)
+
     try:
         request.state.director_user = await validate_supabase_session(tok)
     except HTTPException as e:
         from starlette.responses import JSONResponse
-
         body = getattr(e, "detail", None) or "Unauthorized"
         if isinstance(body, dict):
             return JSONResponse(body, status_code=e.status_code)
@@ -611,6 +627,153 @@ async def supabase_oauth_callback(request: Request) -> HTMLResponse:
 @app.get("/health")
 async def health():
     return {"status": "ok", "version": "0.1.0"}
+
+
+@app.get("/upload", response_class=HTMLResponse)
+async def upload_page():
+    """Drag-and-drop image upload page — returns a fal CDN URL to paste into AI chats."""
+    return HTMLResponse("""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Director — Upload Reference Image</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #0f0f0f; color: #e8e8e8; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .card { background: #1a1a1a; border: 1px solid #2e2e2e; border-radius: 16px; padding: 40px; max-width: 540px; width: 100%; }
+  h1 { font-size: 1.25rem; font-weight: 600; margin-bottom: 6px; }
+  .sub { color: #888; font-size: 0.875rem; margin-bottom: 28px; }
+  .drop-zone { border: 2px dashed #3a3a3a; border-radius: 12px; padding: 48px 24px; text-align: center; cursor: pointer; transition: border-color 0.2s, background 0.2s; position: relative; }
+  .drop-zone:hover, .drop-zone.over { border-color: #7c6af7; background: #1f1d2e; }
+  .drop-zone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+  .drop-icon { font-size: 2.5rem; margin-bottom: 12px; }
+  .drop-label { font-size: 0.9rem; color: #aaa; }
+  .drop-label span { color: #9d8ff7; }
+  #preview-wrap { display: none; margin-top: 20px; text-align: center; }
+  #preview { max-height: 180px; border-radius: 8px; border: 1px solid #2e2e2e; }
+  #filename { font-size: 0.8rem; color: #777; margin-top: 6px; }
+  #upload-btn { margin-top: 20px; width: 100%; background: #7c6af7; color: #fff; border: none; border-radius: 10px; padding: 14px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s; display: none; }
+  #upload-btn:hover { background: #6b59e6; }
+  #upload-btn:disabled { background: #3a3a4a; cursor: not-allowed; }
+  #result { display: none; margin-top: 24px; background: #111; border: 1px solid #2e2e2e; border-radius: 10px; padding: 16px; }
+  .result-label { font-size: 0.75rem; color: #666; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+  .url-row { display: flex; gap: 8px; align-items: center; }
+  .url-box { flex: 1; background: #0a0a0a; border: 1px solid #2e2e2e; border-radius: 8px; padding: 10px 12px; font-size: 0.8rem; color: #b8b0ff; word-break: break-all; font-family: monospace; }
+  .copy-btn { background: #2a2a2a; border: 1px solid #3a3a3a; border-radius: 8px; padding: 10px 14px; color: #ccc; cursor: pointer; font-size: 0.8rem; white-space: nowrap; transition: background 0.15s; }
+  .copy-btn:hover { background: #3a3a3a; }
+  .instructions { margin-top: 16px; background: #161622; border: 1px solid #2a2a3a; border-radius: 8px; padding: 14px; font-size: 0.82rem; color: #aaa; line-height: 1.6; }
+  .instructions strong { color: #e0e0e0; }
+  #error { display: none; margin-top: 16px; color: #f87171; font-size: 0.875rem; }
+  #spinner { display: none; text-align: center; margin-top: 16px; color: #888; font-size: 0.875rem; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Upload Reference Image</h1>
+  <p class="sub">Drop an image here to get a URL you can paste into Claude or Windsurf.</p>
+
+  <div class="drop-zone" id="drop-zone">
+    <input type="file" id="file-input" accept="image/jpeg,image/png,image/webp,image/gif"/>
+    <div class="drop-icon">🖼️</div>
+    <div class="drop-label">Drag &amp; drop or <span>browse</span></div>
+    <div class="drop-label" style="margin-top:4px;font-size:0.78rem">JPEG, PNG, WebP, GIF</div>
+  </div>
+
+  <div id="preview-wrap">
+    <img id="preview" src="" alt="preview"/>
+    <div id="filename"></div>
+  </div>
+
+  <button id="upload-btn" onclick="doUpload()">Upload &amp; get URL</button>
+  <div id="spinner">Uploading to fal storage…</div>
+  <div id="error"></div>
+
+  <div id="result">
+    <div class="result-label">Reference URL — paste this into your AI chat</div>
+    <div class="url-row">
+      <div class="url-box" id="fal-url"></div>
+      <button class="copy-btn" id="copy-btn" onclick="copyUrl()">Copy</button>
+    </div>
+    <div class="instructions">
+      <strong>How to use:</strong><br/>
+      Paste this URL into Claude or Windsurf like:<br/><br/>
+      <em>"Use <strong>director_image_generate</strong> with reference_image_url <strong>[paste URL]</strong>,
+      prompt 'a sunset version with warmer colors', 16:9, standard quality, strength 0.6"</em>
+    </div>
+  </div>
+</div>
+
+<script>
+  let selectedFile = null;
+
+  const dropZone = document.getElementById('drop-zone');
+  const fileInput = document.getElementById('file-input');
+
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault(); dropZone.classList.remove('over');
+    const f = e.dataTransfer.files[0];
+    if (f) setFile(f);
+  });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files[0]) setFile(fileInput.files[0]);
+  });
+
+  function setFile(f) {
+    selectedFile = f;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      document.getElementById('preview').src = ev.target.result;
+      document.getElementById('preview-wrap').style.display = 'block';
+      document.getElementById('filename').textContent = f.name + ' (' + (f.size / 1024).toFixed(1) + ' KB)';
+    };
+    reader.readAsDataURL(f);
+    document.getElementById('upload-btn').style.display = 'block';
+    document.getElementById('result').style.display = 'none';
+    document.getElementById('error').style.display = 'none';
+  }
+
+  async function doUpload() {
+    if (!selectedFile) return;
+    const btn = document.getElementById('upload-btn');
+    btn.disabled = true;
+    document.getElementById('spinner').style.display = 'block';
+    document.getElementById('error').style.display = 'none';
+    document.getElementById('result').style.display = 'none';
+
+    try {
+      const form = new FormData();
+      form.append('file', selectedFile);
+      const resp = await fetch('/api/generate/upload', { method: 'POST', body: form });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || JSON.stringify(data));
+
+      document.getElementById('fal-url').textContent = data.fal_url;
+      document.getElementById('result').style.display = 'block';
+    } catch(e) {
+      const el = document.getElementById('error');
+      el.textContent = 'Upload failed: ' + e.message;
+      el.style.display = 'block';
+    } finally {
+      btn.disabled = false;
+      document.getElementById('spinner').style.display = 'none';
+    }
+  }
+
+  function copyUrl() {
+    const url = document.getElementById('fal-url').textContent;
+    navigator.clipboard.writeText(url).then(() => {
+      const btn = document.getElementById('copy-btn');
+      btn.textContent = 'Copied!';
+      setTimeout(() => btn.textContent = 'Copy', 2000);
+    });
+  }
+</script>
+</body>
+</html>
+""")
 
 
 # ── Protected API routers
